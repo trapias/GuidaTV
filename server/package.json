@@ -1,0 +1,8 @@
+{
+  "name": "guidatv-server",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": { "start": "node src/index.js", "test": "node --test" },
+  "dependencies": { "fast-xml-parser": "^5.0.0" }
+}
