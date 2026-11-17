@@ -1,0 +1,33 @@
+# Guida TV italiana: epg (iptv-org) scarica i palinsesti, web li serve.
+# Accesso: http://<ip-lan>:8085  oppure  http://<nome-host-tailscale>:8085
+services:
+  epg:
+    image: ghcr.io/iptv-org/epg:master
+    restart: unless-stopped
+    environment:
+      TZ: Europe/Rome
+      CRON_SCHEDULE: "0 4,14 * * *"   # due aggiornamenti al giorno (ora del container)
+      RUN_AT_STARTUP: "true"
+      DAYS: "3"
+      MAX_CONNECTIONS: "3"
+      DELAY: "100"
+      TIMEOUT: "30000"
+    volumes:
+      - ./epg/channels.xml:/epg/public/channels.xml:ro
+    expose: ["3000"]
+
+  web:
+    build: ./server
+    restart: unless-stopped
+    depends_on: [epg]
+    environment:
+      TZ: Europe/Rome
+      EPG_URL: http://epg:3000/guide.xml
+      REFRESH_MIN: "20"
+    volumes:
+      - guidatv-data:/data   # ultima guida valida, usata se epg è giù
+    ports:
+      - "8085:8080"
+
+volumes:
+  guidatv-data:
