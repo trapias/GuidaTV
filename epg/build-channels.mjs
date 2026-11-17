@@ -17,6 +17,9 @@ const keyOf = name =>
 // Canali che non interessano (radio, shopping, estero in altre lingue, DAZN a pagamento...)
 const EXCLUDE = /radio|^rtl 102|virgin|^r101|monte carlo|^qvc|value 24|raiplay|al jazeera|nhk|france 24|bbc world|^cnn|^fox (news|business)|bloomberg|i24|russia today|euronews|^sky sport (uno|arena)?$/i
 
+// Alias: stesso canale con nomi diversi tra le sorgenti
+const ALIAS = { '20': '20mediaset', twentyseven: '27twentyseven', '27twentyseven': '27twentyseven', la1: 'rai1', la2: 'rai2' }
+
 const seen = new Map()
 for (const site of SOURCES) {
   const xml = await (await fetch(`${RAW}/${site}/${site}.channels.xml`)).text()
@@ -28,7 +31,8 @@ for (const site of SOURCES) {
       if (n) name = `Sky Sport ${n[1]}`
     }
     if (EXCLUDE.test(name) && !/^sky sport (uno|arena)$/i.test(name)) continue
-    const key = keyOf(name)
+    const key = ALIAS[keyOf(name)] || keyOf(name)
+    if (/^(la ?1|la ?2)$/i.test(name)) continue // canali esteri
     if (!key || seen.has(key)) continue
     seen.set(key, { site, site_id: attrs.site_id, lang: attrs.lang || 'it', name: name.replace(/\s+HD\b/i, '').trim(), key })
   }

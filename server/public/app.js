@@ -58,6 +58,11 @@ const starBtn = ch => {
   return b
 }
 
+// ---------- ordinamento ----------
+const TOP = ['rai1', 'rai2', 'rai3', 'rete4', 'canale5', 'italia1', 'la7', 'tv8', 'nove', '20mediaset', 'rai4', 'iris', 'la5', 'rai5', 'raimovie', 'raipremium', 'cine34', 'focus', 'topcrime', 'boing', 'raigulp', 'raiyoyo', 'raistoria', 'raisport', 'la7d', 'mediasetextra', 'dmax', 'realtime', 'cielo', 'rainews24', 'skytg24', 'tgcom24']
+const rank = c => { const i = TOP.indexOf(c.id); return i < 0 ? 1000 + Math.max(0, GROUP_ORDER.indexOf(c.group)) : i }
+const byTelecomando = (a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name, 'it', { numeric: true })
+
 // ---------- filtri ----------
 const GROUP_ORDER = ['Rai', 'Mediaset', 'Altri free', 'Sport', 'Cinema', 'News', 'Sky', 'Altri']
 function visibleChannels() {
@@ -233,7 +238,7 @@ async function init() {
   main.append(h('div', { class: 'empty' }, 'Caricamento…'))
   try {
     const [channels, nowData, health] = await Promise.all([api('channels'), api('now'), api('health')])
-    state.channels = channels.filter(c => c.n > 0)
+    state.channels = channels.filter(c => c.n > 0).sort(byTelecomando)
     state.byId = new Map(state.channels.map(c => [c.id, c]))
     state.nowData = nowData
     if (!state.channels.length) {

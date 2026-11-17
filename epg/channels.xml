@@ -1,6 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <channels>
-  <channel site="superguidatv.it" site_id="20/443" lang="it" xmltv_id="20">20</channel>
   <channel site="mediasetinfinity.mediaset.it" site_id="LB" lang="it" xmltv_id="20mediaset">20 Mediaset</channel>
   <channel site="guidatv.sky.it" site_id="DTH#11342" lang="it" xmltv_id="27twentyseven">27Twentyseven</channel>
   <channel site="guidatv.sky.it" site_id="DTH#7587" lang="it" xmltv_id="acisporttv">ACI Sport TV</channel>
@@ -64,8 +63,6 @@
   <channel site="superguidatv.it" site_id="italia-7-gold/310" lang="it" xmltv_id="italia7gold">Italia 7 Gold</channel>
   <channel site="raiplay.it" site_id="italiana" lang="it" xmltv_id="italiana">ITALIANA</channel>
   <channel site="superguidatv.it" site_id="k2/245" lang="it" xmltv_id="k2">K2</channel>
-  <channel site="superguidatv.it" site_id="la-1/rsi/231" lang="it" xmltv_id="la1">La 1</channel>
-  <channel site="superguidatv.it" site_id="la-2/rsi/232" lang="it" xmltv_id="la2">La 2</channel>
   <channel site="mediasetinfinity.mediaset.it" site_id="KA" lang="it" xmltv_id="la5">La5</channel>
   <channel site="guidatv.sky.it" site_id="DTH#319" lang="it" xmltv_id="la7">LA7</channel>
   <channel site="guidatv.sky.it" site_id="DTH#6624" lang="it" xmltv_id="la7d">LA7D</channel>
@@ -186,7 +183,6 @@
   <channel site="guidatv.sky.it" site_id="DTH#9013" lang="it" xmltv_id="trmh24">TRM h24</channel>
   <channel site="guidatv.sky.it" site_id="DTH#7588" lang="it" xmltv_id="tv2000">TV2000</channel>
   <channel site="guidatv.sky.it" site_id="DTH#8195" lang="it" xmltv_id="tv8">TV8</channel>
-  <channel site="superguidatv.it" site_id="twenty-seven/601" lang="it" xmltv_id="twentyseven">Twenty Seven</channel>
   <channel site="superguidatv.it" site_id="vh1/317" lang="it" xmltv_id="vh1">VH1</channel>
   <channel site="superguidatv.it" site_id="warner-tv/1344181813" lang="it" xmltv_id="warnertv">Warner TV</channel>
 </channels>
