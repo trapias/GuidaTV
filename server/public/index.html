@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Guida TV</title>
+<meta name="theme-color" content="#0f1115" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f6f7f9" media="(prefers-color-scheme: light)">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/icon.svg">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header class="top">
+  <div class="bar">
+    <h1>Guida TV</h1>
+    <input id="q" type="search" placeholder="Cerca programmi…" autocomplete="off" enterkeyhint="search" aria-label="Cerca programmi">
+    <nav class="tabs" role="tablist">
+      <button data-view="now" class="on" role="tab">Adesso</button>
+      <button data-view="grid" role="tab">Griglia</button>
+    </nav>
+  </div>
+  <div id="chips" class="chips" aria-label="Filtra canali"></div>
+</header>
+<main id="main"></main>
+<div id="status" class="status" hidden></div>
+<dialog id="sheet"></dialog>
+<script src="/app.js" type="module"></script>
+</body>
+</html>
