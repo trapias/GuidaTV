@@ -14,6 +14,8 @@ services:
       TIMEOUT: "30000"
     volumes:
       - ./epg/channels.xml:/epg/public/channels.xml:ro
+      # parser aggiornato: lo scraper upstream di superguidatv.it non funziona più
+      - ./epg/superguidatv.it.config.js:/epg/sites/superguidatv.it/superguidatv.it.config.js:ro
     expose: ["3000"]
 
   web:
