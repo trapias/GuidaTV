@@ -67,11 +67,11 @@ async function api(url, res, req) {
     case '/api/live': return json(res, { error: 'usa /api/live/<id>.ts' }, 404)
     case '/api/stream': { // per i player con schema URL personalizzato
       const s = store.streams.get(q.get('c'))
-      return s ? json(res, { url: playUrl(req, q.get('c'), s), name: store.channels.get(q.get('c')).name }) : json(res, { error: 'nessuno stream' }, 404)
+      return s && !s.web ? json(res, { url: playUrl(req, q.get('c'), s), name: store.channels.get(q.get('c')).name }) : json(res, { error: 'nessuno stream' }, 404)
     }
     case '/api/play.m3u': { // un click: il sistema apre il file con il player associato (VLC)
       const id = q.get('c'), s = store.streams.get(id)
-      if (!s) return json(res, { error: 'nessuno stream' }, 404)
+      if (!s || s.web) return json(res, { error: 'nessuno stream' }, 404)
       const name = store.channels.get(id).name
       res.writeHead(200, { 'content-type': 'audio/x-mpegurl; charset=utf-8', 'content-disposition': `attachment; filename="${id}.m3u"`, 'cache-control': 'no-store' })
       return res.end(singleM3u(name, s, playUrl(req, id, s)))

@@ -72,6 +72,9 @@ const MODES = {
 }
 const savePlayer = () => store.set('player', state.player)
 async function play(ch) {
+  if (ch.web) { // link ufficiale (app RaiPlay su iPhone via universal link, o sito): non serve il player esterno
+    const a = h('a', { href: ch.web, target: '_blank', rel: 'noopener' }); document.body.append(a); a.click(); a.remove(); return
+  }
   const { mode, tpl } = state.player
   try {
     if (mode === 'm3u') {
@@ -88,8 +91,11 @@ async function play(ch) {
     location.href = tpl.replaceAll('{urlenc}', encodeURIComponent(s.url)).replaceAll('{url}', s.url).replaceAll('{name}', encodeURIComponent(s.name))
   } catch { showStatus('Stream non disponibile', 4000) }
 }
-const playBtn = ch => ch.live ? h('button', { class: 'playb', 'aria-label': 'Guarda in diretta', title: 'Guarda in diretta nel player esterno',
-  onclick: e => { e.stopPropagation(); play(ch) } }, '▶') : null
+const playBtn = ch => !ch.live ? null : ch.web
+  ? h('a', { class: 'playb web', href: ch.web, target: '_blank', rel: 'noopener', 'aria-label': 'Guarda sul sito/app ufficiale',
+      title: 'Apre l\'app o il sito ufficiale', onclick: e => e.stopPropagation() }, '↗')
+  : h('button', { class: 'playb', 'aria-label': 'Guarda in diretta', title: 'Guarda in diretta nel player esterno',
+      onclick: e => { e.stopPropagation(); play(ch) } }, '▶')
 
 function openSettings() {
   const mode = h('select', { id: 'pmode' }, Object.entries(MODES).map(([v, l]) => h('option', { value: v, selected: v === state.player.mode }, l)))
@@ -238,7 +244,7 @@ async function openDetail(chId, s) {
   try { p = await api(`programme?c=${encodeURIComponent(chId)}&s=${s}`) } catch { return showStatus('Dettaglio non disponibile') }
   const ch = state.byId.get(chId)
   const close = h('button', { class: 'btn', onclick: () => sheet.close() }, 'Chiudi')
-  const live = ch?.live && h('button', { class: 'btn', onclick: () => play(ch) }, '▶ Guarda in diretta')
+  const live = ch?.live && h('button', { class: 'btn', onclick: () => play(ch) }, ch.web ? '↗ Guarda sul sito/app ufficiale' : '▶ Guarda in diretta')
   const ics = h('button', { class: 'btn pri', onclick: () => downloadIcs(p, ch) }, 'Aggiungi al calendario')
   sheet.replaceChildren(h('div', { class: 'sh' },
     p.img && h('img', { src: p.img, alt: '', loading: 'lazy', referrerpolicy: 'no-referrer', onerror: e => e.target.remove() }),

@@ -57,7 +57,7 @@ export class Store {
 
   listChannels() {
     return [...this.channels.values()].map(({ id, name, group, programmes }) => ({
-      id, name, group, n: programmes.length, lcn: this.lcn[id] || null, live: this.streams.has(id),
+      id, name, group, n: programmes.length, lcn: this.lcn[id] || null, live: this.streams.has(id), web: this.streams.get(id)?.web ? this.streams.get(id).url : null,
     }))
   }
 

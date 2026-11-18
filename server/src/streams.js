@@ -18,7 +18,7 @@ export function parseM3u(text) {
     const line = raw.trim()
     if (line.startsWith('#EXTINF')) {
       const attrs = Object.fromEntries([...line.matchAll(/([\w-]+)="([^"]*)"/g)].map(m => [m[1], m[2]]))
-      cur = { attrs, name: line.slice(line.lastIndexOf(',') + 1).trim(), ua: attrs['http-user-agent'] || '', referrer: attrs['http-referrer'] || '', mux: attrs.mux === '1' }
+      cur = { attrs, name: line.slice(line.lastIndexOf(',') + 1).trim(), ua: attrs['http-user-agent'] || '', referrer: attrs['http-referrer'] || '', mux: attrs.mux === '1', web: attrs.web === '1' }
     } else if (cur && line.startsWith('#EXTVLCOPT:')) {
       const [k, ...v] = line.slice(11).split('=')
       if (k === 'http-user-agent') cur.ua = v.join('=')
@@ -40,7 +40,7 @@ export function matchStreams(entries, channelIds) {
     const cands = [fromTvg, e.name].filter(Boolean).map(keyOf).map(k => ALIAS[k] || k)
     const id = cands.find(k => ids.has(k))
     if (!id || map.has(id)) continue // vale la prima voce: l'ordine della playlist è la priorità
-    map.set(id, { url: e.url, ua: e.ua, referrer: e.referrer, mux: e.mux })
+    map.set(id, { url: e.url, ua: e.ua, referrer: e.referrer, mux: e.mux, web: e.web })
   }
   return map
 }

@@ -1,7 +1,8 @@
 #EXTM3U
 # Solo stream ufficiali in chiaro, dai CDN degli editori (Mediaset, TV2000, Warner Bros. Discovery).
 # mux="1": audio e video su tracce separate, uniti dal server in un solo flusso (VLC li desincronizza).
-# Rai e La7 esclusi: i loro server rifiutano i player generici (403).
+# web="1": nessun flusso diretto (Rai, La7, TV8 rifiutano i player generici o usano player protetti): il pulsante apre la
+# pagina ufficiale (su iPhone i link raiplay.it/dirette/* si aprono nell'app RaiPlay).
 #EXTINF:-1 tvg-id="rete4" mux="1",Rete 4
 https://live02-seg.msf.cdn.mediaset.net/live/ch-r4/r4-clr.isml/index.m3u8
 #EXTINF:-1 tvg-id="canale5" mux="1",Canale 5
@@ -42,3 +43,33 @@ https://streaming.aurora.enhanced.live/live/mpc/enl0eG1mLmVncmVzcy5mZDJ2eHI=/out
 https://streaming.aurora.enhanced.live/live/mpc/enl0eG1mLmVncmVzcy5mZDJ2eHI=/out/v1/IT_SIMULCAST/HGTV/CMAF/index.m3u8
 #EXTINF:-1 tvg-id="discoverychannel",Discovery Channel
 https://streaming.aurora.enhanced.live/live/mpc/enl0eG1mLmVncmVzcy5mZDJ2eHI=/out/v1/IT_SIMULCAST/DISCOVERYCHANNEL/CMAF/index.m3u8
+#EXTINF:-1 tvg-id="rai1" web="1",Rai 1
+https://www.raiplay.it/dirette/rai1
+#EXTINF:-1 tvg-id="rai2" web="1",Rai 2
+https://www.raiplay.it/dirette/rai2
+#EXTINF:-1 tvg-id="rai3" web="1",Rai 3
+https://www.raiplay.it/dirette/rai3
+#EXTINF:-1 tvg-id="rai4" web="1",Rai 4
+https://www.raiplay.it/dirette/rai4
+#EXTINF:-1 tvg-id="rai5" web="1",Rai 5
+https://www.raiplay.it/dirette/rai5
+#EXTINF:-1 tvg-id="raimovie" web="1",Rai Movie
+https://www.raiplay.it/dirette/raimovie
+#EXTINF:-1 tvg-id="raipremium" web="1",Rai Premium
+https://www.raiplay.it/dirette/raipremium
+#EXTINF:-1 tvg-id="raigulp" web="1",Rai Gulp
+https://www.raiplay.it/dirette/raigulp
+#EXTINF:-1 tvg-id="raiyoyo" web="1",Rai Yoyo
+https://www.raiplay.it/dirette/raiyoyo
+#EXTINF:-1 tvg-id="raistoria" web="1",Rai Storia
+https://www.raiplay.it/dirette/raistoria
+#EXTINF:-1 tvg-id="rainews24" web="1",Rai News 24
+https://www.raiplay.it/dirette/rainews24
+#EXTINF:-1 tvg-id="raisport" web="1",Rai Sport
+https://www.raiplay.it/dirette/raisport
+#EXTINF:-1 tvg-id="raiscuola" web="1",Rai Scuola
+https://www.raiplay.it/dirette/raiscuola
+#EXTINF:-1 tvg-id="la7" web="1",La7
+https://www.la7play.it/dirette/la7
+#EXTINF:-1 tvg-id="tv8" web="1",TV8
+https://www.tv8.it/streaming

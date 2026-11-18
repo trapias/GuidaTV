@@ -42,3 +42,8 @@ test('loadLcn: predefiniti presenti, file mancante ok', async () => {
   const m = await loadLcn('/nonexistent')
   assert.equal(m.rai1, 1); assert.equal(m.nove, 9); assert.ok(!('_nota' in m))
 })
+
+test('voci web="1": link ufficiale, non uno stream', () => {
+  const m = matchStreams(parseM3u('#EXTM3U\n#EXTINF:-1 tvg-id="rai1" web="1",Rai 1\nhttps://www.raiplay.it/dirette/rai1\n'), ['rai1'])
+  assert.equal(m.get('rai1').web, true)
+})
