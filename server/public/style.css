@@ -55,6 +55,18 @@ main{padding:12px 14px calc(24px + env(safe-area-inset-bottom));max-width:1400px
 .prog .ps{color:var(--mute);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums}
 .nowline{position:absolute;top:0;bottom:0;width:2px;background:var(--now);z-index:8;pointer-events:none}
 
+/* LCN, player */
+[hidden]{display:none!important}
+.lcn{flex:none;min-width:26px;padding:1px 6px;border-radius:6px;background:var(--panel2);border:1px solid var(--line);font-size:12px;font-weight:700;text-align:center;font-variant-numeric:tabular-nums;color:var(--mute)}
+.gch .lcn{min-width:22px;padding:0 4px;font-size:11px}
+.playb{flex:none;border:0;background:var(--acc);color:var(--acc-fg);width:28px;height:28px;border-radius:50%;font-size:12px;line-height:1;padding:0 0 0 2px}
+.gch[title^=Guarda]{cursor:pointer}
+.dot{flex:none;width:6px;height:6px;border-radius:50%;background:var(--acc);margin-left:auto}
+.gear{border:1px solid var(--line);background:var(--panel);border-radius:10px;width:36px;height:36px;font-size:18px;line-height:1;color:var(--mute)}
+.frow{display:flex;flex-direction:column;gap:4px;font-weight:600;font-size:14px}
+.frow select,.frow input{font:inherit;font-weight:400;padding:8px 10px;border-radius:10px;border:1px solid var(--line);background:var(--panel2);color:var(--fg)}
+.frow small{font-weight:400;color:var(--mute)}
+
 /* Ricerca */
 .results{display:flex;flex-direction:column;gap:6px}
 .dayh{margin:14px 0 4px;font-weight:700;text-transform:capitalize;color:var(--mute);font-size:13px}

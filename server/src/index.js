@@ -1,8 +1,11 @@
 import { createServer } from 'node:http'
+import { spawn } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
 import { extname, join, normalize } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Store } from './store.js'
+import { loadLcn } from './lcn.js'
+import { loadPlaylist, matchStreams, singleM3u } from './streams.js'
 
 const PORT = Number(process.env.PORT || 8080)
 const EPG_URL = process.env.EPG_URL || 'http://epg:3000/guide.xml'
@@ -10,7 +13,41 @@ const DATA_DIR = process.env.DATA_DIR || '/data'
 const REFRESH_MIN = Number(process.env.REFRESH_MIN || 20)
 const PUBLIC_DIR = process.env.PUBLIC_DIR || fileURLToPath(new URL('../public', import.meta.url))
 
-const store = new Store({ epgUrl: EPG_URL, dataDir: DATA_DIR })
+const STREAMS_SOURCE = process.env.STREAMS_M3U || '' // URL o file; default /data/streams.m3u
+const store = new Store({ epgUrl: EPG_URL, dataDir: DATA_DIR, lcn: await loadLcn(DATA_DIR) })
+
+// Stream con audio/video su tracce HLS separate (Mediaset): VLC li desincronizza, quindi li uniamo
+// in un unico MPEG-TS senza ricodificare (-c copy). Un ffmpeg per spettatore, chiuso alla disconnessione.
+const MAX_MUX = Number(process.env.MAX_MUX || 4)
+let muxing = 0
+const playUrl = (req, id, s) => (s.mux ? `http://${req.headers.host}/api/live/${encodeURIComponent(id)}.ts` : s.url)
+function liveMux(id, req, res) {
+  const s = store.streams.get(id)
+  if (!s?.mux) return json(res, { error: 'nessuno stream' }, 404)
+  if (muxing >= MAX_MUX) return json(res, { error: 'troppi stream attivi' }, 503)
+  const args = ['-hide_banner', '-loglevel', 'error', '-fflags', '+genpts', '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5']
+  if (s.ua) args.push('-user_agent', s.ua)
+  if (s.referrer) args.push('-referer', s.referrer)
+  args.push('-i', s.url, '-map', '0:v:0', '-map', '0:a:0', '-c', 'copy', '-f', 'mpegts', 'pipe:1')
+  const ff = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'] })
+  muxing++
+  let done = false
+  const end = () => { if (done) return; done = true; muxing--; ff.kill('SIGKILL') }
+  ff.stderr.on('data', d => console.warn(`ffmpeg ${id}: ${String(d).trim().slice(0, 300)}`))
+  ff.on('error', e => { console.error('ffmpeg non avviabile:', e.message); end(); if (!res.headersSent) json(res, { error: 'ffmpeg non disponibile' }, 502); else res.destroy() })
+  ff.on('close', () => { end(); res.end() })
+  res.on('close', end)
+  res.writeHead(200, { 'content-type': 'video/mp2t', 'cache-control': 'no-store' })
+  ff.stdout.pipe(res)
+}
+
+async function loadStreams() {
+  try {
+    const entries = await loadPlaylist(STREAMS_SOURCE, DATA_DIR)
+    store.streams = matchStreams(entries, store.channels.keys())
+    if (entries.length) console.info(`stream: ${store.streams.size} canali associati (${entries.length} voci)`)
+  } catch (e) { console.warn(`playlist stream non caricata: ${e.message}`) }
+}
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
   '.svg': 'image/svg+xml', '.json': 'application/json', '.webmanifest': 'application/manifest+json', '.png': 'image/png',
@@ -22,11 +59,23 @@ const json = (res, data, status = 200, cache = 'no-cache') => {
 }
 const num = (v, d) => (Number.isFinite(Number(v)) && v !== null && v !== '' ? Number(v) : d)
 
-async function api(url, res) {
+async function api(url, res, req) {
   const q = url.searchParams
   switch (url.pathname) {
     case '/api/health': return json(res, store.health())
     case '/api/channels': return json(res, store.listChannels())
+    case '/api/live': return json(res, { error: 'usa /api/live/<id>.ts' }, 404)
+    case '/api/stream': { // per i player con schema URL personalizzato
+      const s = store.streams.get(q.get('c'))
+      return s ? json(res, { url: playUrl(req, q.get('c'), s), name: store.channels.get(q.get('c')).name }) : json(res, { error: 'nessuno stream' }, 404)
+    }
+    case '/api/play.m3u': { // un click: il sistema apre il file con il player associato (VLC)
+      const id = q.get('c'), s = store.streams.get(id)
+      if (!s) return json(res, { error: 'nessuno stream' }, 404)
+      const name = store.channels.get(id).name
+      res.writeHead(200, { 'content-type': 'audio/x-mpegurl; charset=utf-8', 'content-disposition': `attachment; filename="${id}.m3u"`, 'cache-control': 'no-store' })
+      return res.end(singleM3u(name, s, playUrl(req, id, s)))
+    }
     case '/api/now': return json(res, store.now(num(q.get('at'), Date.now())))
     case '/api/schedule': {
       const from = num(q.get('from'), Date.now()), to = num(q.get('to'), from + 86400000)
@@ -51,7 +100,7 @@ async function serveStatic(pathname, res) {
     const body = await readFile(file)
     res.writeHead(200, {
       'content-type': MIME[extname(file)] || 'application/octet-stream',
-      'cache-control': rel === 'index.html' ? 'no-cache' : 'public, max-age=3600',
+      'cache-control': 'no-cache', // app su LAN: rivalida sempre, così gli aggiornamenti arrivano subito sui telefoni
     })
     res.end(body)
   } catch {
@@ -63,7 +112,11 @@ const server = createServer(async (req, res) => {
   try {
     const url = new URL(req.url, 'http://x')
     if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(405); return res.end() }
-    if (url.pathname.startsWith('/api/')) return await api(url, res)
+    if (url.pathname.startsWith('/api/')) {
+      const m = /^\/api\/live\/([^/]+)\.ts$/.exec(url.pathname)
+      if (m) return liveMux(decodeURIComponent(m[1]), req, res)
+      return await api(url, res, req)
+    }
     return await serveStatic(url.pathname, res)
   } catch (e) {
     console.error(e)
@@ -75,8 +128,10 @@ await store.loadCache()
 server.listen(PORT, () => console.log(`GuidaTV in ascolto su :${PORT}`))
 
 // L'epg può metterci minuti ad essere pronto al primo avvio: ritenta spesso finché non c'è una guida.
+let loops = 0
 const loop = async () => {
   await store.refresh()
+  if (loops++ % 18 === 0 || !store.streams.size) await loadStreams() // ~ogni 6h, o finché non c'è nulla
   setTimeout(loop, (store.channels.size ? REFRESH_MIN : 1) * 60000)
 }
 loop()

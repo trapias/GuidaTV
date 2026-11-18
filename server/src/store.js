@@ -6,7 +6,9 @@ import { parseXmltv } from './xmltv.js'
 const fold = s => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
 
 export class Store {
-  constructor({ epgUrl, dataDir, log = console }) {
+  constructor({ epgUrl, dataDir, log = console, lcn = {} }) {
+    this.lcn = lcn
+    this.streams = new Map()
     this.epgUrl = epgUrl
     this.cacheFile = join(dataDir, 'guide.xml')
     this.dataDir = dataDir
@@ -55,7 +57,7 @@ export class Store {
 
   listChannels() {
     return [...this.channels.values()].map(({ id, name, group, programmes }) => ({
-      id, name, group, n: programmes.length,
+      id, name, group, n: programmes.length, lcn: this.lcn[id] || null, live: this.streams.has(id),
     }))
   }
 

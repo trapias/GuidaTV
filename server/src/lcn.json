@@ -1,0 +1,10 @@
+{
+  "_nota": "Numeri LCN nazionali del digitale terrestre (id canale -> numero). Possono differire per regione/telecomando: per correggere metti un lcn.json con le stesse chiavi nel volume dati (/data/lcn.json), ha la precedenza.",
+  "rai1": 1, "rai2": 2, "rai3": 3, "rete4": 4, "canale5": 5, "italia1": 6, "la7": 7, "tv8": 8, "nove": 9,
+  "20mediaset": 20, "rai4": 21, "iris": 22, "rai5": 23, "raimovie": 24, "raipremium": 25, "cielo": 26,
+  "27twentyseven": 27, "tv2000": 28, "la7d": 29, "la5": 30, "realtime": 31, "foodnetwork": 33,
+  "cine34": 34, "focus": 35, "warnertv": 37, "giallo": 38, "topcrime": 39, "boing": 40, "k2": 41,
+  "raigulp": 42, "raiyoyo": 43, "frisbee": 44, "cartoonito": 46, "super": 47, "rainews24": 48,
+  "tgcom24": 51, "dmax": 52, "raistoria": 54, "mediasetextra": 55, "hgtvhomegarden": 56, "raisport": 57,
+  "italia2": 66, "raiscuola": 146
+}

@@ -13,6 +13,7 @@ const state = {
   group: store.get('group', 'Tutti'),
   day: 0,
   query: '',
+  player: { mode: /iPhone|iPad|iPod/.test(navigator.userAgent) ? 'scheme' : 'm3u', tpl: 'vlc://{url}', ...store.get('player', {}) },
 }
 let timers = []
 
@@ -38,8 +39,13 @@ const fmtDay = ms => new Date(ms).toLocaleDateString('it-IT', { weekday: 'long',
 const dayStart = off => { const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() + off); return d.getTime() }
 const hue = s => { let x = 0; for (const c of s) x = (x * 31 + c.charCodeAt(0)) % 360; return x }
 const initials = n => n.replace(/[^\p{L}\p{N} +!]/gu, '').split(/\s+/).filter(Boolean).slice(0, 3).map(w => w[0]).join('').toUpperCase()
+const lcnBadge = ch => ch.lcn ? h('span', { class: 'lcn', title: 'Numero sul telecomando (digitale terrestre)' }, ch.lcn) : null
 const logo = ch => h('div', { class: 'logo', style: `background:hsl(${hue(ch.name)} 55% 42%)` }, initials(ch.name))
-const showStatus = msg => { statusEl.textContent = msg; statusEl.hidden = !msg }
+let statusT
+const showStatus = (msg, ms = 0) => {
+  statusEl.textContent = msg; statusEl.hidden = !msg
+  clearTimeout(statusT); if (msg && ms) statusT = setTimeout(() => { statusEl.hidden = true }, ms)
+}
 const clear = () => { timers.forEach(clearInterval); timers = []; main.replaceChildren() }
 
 function toggleFav(id) {
@@ -58,10 +64,54 @@ const starBtn = ch => {
   return b
 }
 
+// ---------- player esterno ----------
+const MODES = {
+  m3u: 'Scarica .m3u (si apre col player associato, es. VLC)',
+  scheme: 'Schema URL personalizzato (es. vlc:// su iOS/Android)',
+  copy: 'Copia l\'indirizzo dello stream',
+}
+const savePlayer = () => store.set('player', state.player)
+async function play(ch) {
+  const { mode, tpl } = state.player
+  try {
+    if (mode === 'm3u') {
+      const a = h('a', { href: `/api/play.m3u?c=${encodeURIComponent(ch.id)}`, download: `${ch.id}.m3u` })
+      document.body.append(a); a.click(); a.remove()
+      return showStatus(`Apro ${ch.name} nel player…`, 3000)
+    }
+    const s = await api(`stream?c=${encodeURIComponent(ch.id)}`)
+    if (mode === 'copy') {
+      try { await navigator.clipboard.writeText(s.url) } catch { return prompt('Copia l\'indirizzo dello stream:', s.url) }
+      return showStatus('Indirizzo copiato', 3000)
+    }
+    if (!/^[a-z][a-z0-9+.-]*:/i.test(tpl) || /^(javascript|data|vbscript):/i.test(tpl)) return showStatus('Schema del player non valido (vedi ⚙)', 5000)
+    location.href = tpl.replaceAll('{urlenc}', encodeURIComponent(s.url)).replaceAll('{url}', s.url).replaceAll('{name}', encodeURIComponent(s.name))
+  } catch { showStatus('Stream non disponibile', 4000) }
+}
+const playBtn = ch => ch.live ? h('button', { class: 'playb', 'aria-label': 'Guarda in diretta', title: 'Guarda in diretta nel player esterno',
+  onclick: e => { e.stopPropagation(); play(ch) } }, '▶') : null
+
+function openSettings() {
+  const mode = h('select', { id: 'pmode' }, Object.entries(MODES).map(([v, l]) => h('option', { value: v, selected: v === state.player.mode }, l)))
+  const tpl = h('input', { id: 'ptpl', type: 'text', value: state.player.tpl, spellcheck: 'false', autocapitalize: 'off', placeholder: 'vlc://{url}' })
+  const row = h('label', { class: 'frow' }, 'Schema', tpl, h('small', {}, 'Segnaposto: {url} indirizzo, {urlenc} codificato, {name} nome canale.'))
+  const sync = () => { row.hidden = mode.value !== 'scheme' }
+  mode.addEventListener('change', sync); sync()
+  const save = h('button', { class: 'btn pri', onclick: () => {
+    state.player = { mode: mode.value, tpl: tpl.value.trim() || 'vlc://{url}' }; savePlayer(); sheet.close()
+  } }, 'Salva')
+  sheet.replaceChildren(h('div', { class: 'sh' }, h('h2', {}, 'Player esterno'),
+    h('p', {}, 'Il pulsante ▶ compare sui canali con uno stream configurato sul server. Questa scelta vale solo per questo dispositivo.'),
+    h('label', { class: 'frow' }, 'Come aprire lo stream', mode), row,
+    h('div', { class: 'acts' }, save, h('button', { class: 'btn', onclick: () => sheet.close() }, 'Annulla'))))
+  sheet.showModal()
+}
+$('#settings').addEventListener('click', openSettings)
+
 // ---------- ordinamento ----------
 const TOP = ['rai1', 'rai2', 'rai3', 'rete4', 'canale5', 'italia1', 'la7', 'tv8', 'nove', '20mediaset', 'rai4', 'iris', 'la5', 'rai5', 'raimovie', 'raipremium', 'cine34', 'focus', 'topcrime', 'boing', 'raigulp', 'raiyoyo', 'raistoria', 'raisport', 'la7d', 'mediasetextra', 'dmax', 'realtime', 'cielo', 'rainews24', 'skytg24', 'tgcom24']
 const rank = c => { const i = TOP.indexOf(c.id); return i < 0 ? 1000 + Math.max(0, GROUP_ORDER.indexOf(c.group)) : i }
-const byTelecomando = (a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name, 'it', { numeric: true })
+const byTelecomando = (a, b) => (a.lcn || 1e4) - (b.lcn || 1e4) || rank(a) - rank(b) || a.name.localeCompare(b.name, 'it', { numeric: true })
 
 // ---------- filtri ----------
 const GROUP_ORDER = ['Rai', 'Mediaset', 'Altri free', 'Sport', 'Cinema', 'News', 'Sky', 'Altri']
@@ -94,7 +144,7 @@ async function viewNow() {
       const next = cur ? d.next : (d.next || d.cur)
       const pct = cur ? Math.min(100, ((now - cur[0]) / (cur[1] - cur[0])) * 100) : 0
       return h('div', { class: 'card', onclick: () => cur ? openDetail(ch.id, cur[0]) : next && openDetail(ch.id, next[0]) },
-        h('div', { class: 'head' }, logo(ch), h('span', { class: 'cname' }, ch.name), starBtn(ch)),
+        h('div', { class: 'head' }, lcnBadge(ch), logo(ch), h('span', { class: 'cname' }, ch.name), playBtn(ch), starBtn(ch)),
         cur ? [
           h('div', { class: 'ctitle' }, cur[2]),
           h('div', { class: 'csub' }, cur[3] || cur[4] || ' '),
@@ -143,7 +193,7 @@ async function viewGrid() {
       el.dataset.s = s; el.dataset.e = e; liveEls.push(el)
       lane.append(el)
     }
-    grid.append(h('div', { class: 'grow' }, h('div', { class: 'gch', style: `width:${colW}px` }, logo(ch), h('span', {}, ch.name)), lane))
+    grid.append(h('div', { class: 'grow' }, h('div', { class: 'gch', style: `width:${colW}px`, onclick: () => ch.live && play(ch), title: ch.live ? 'Guarda in diretta' : '' }, lcnBadge(ch), logo(ch), h('span', {}, ch.name), ch.live && h('i', { class: 'dot' })), lane))
   }
   const wrap = h('div', { class: 'gridwrap' }, grid)
   main.append(wrap)
@@ -177,7 +227,7 @@ async function viewSearch() {
     const ch = state.byId.get(r.c)
     out.push(h('div', { class: 'res', onclick: () => openDetail(r.c, r.s) },
       h('span', { class: 'rt' }, fmt(r.s)),
-      h('div', { class: 'rm' }, h('div', { class: 'rn' }, r.t), h('div', { class: 'rc' }, [ch?.name, r.sub || r.cat].filter(Boolean).join(' · ')))))
+      h('div', { class: 'rm' }, h('div', { class: 'rn' }, r.t), h('div', { class: 'rc' }, [ch?.lcn && `${ch.lcn}`, ch?.name, r.sub || r.cat].filter(Boolean).join(' · ')))))
   }
   box.replaceChildren(...out)
 }
@@ -188,14 +238,15 @@ async function openDetail(chId, s) {
   try { p = await api(`programme?c=${encodeURIComponent(chId)}&s=${s}`) } catch { return showStatus('Dettaglio non disponibile') }
   const ch = state.byId.get(chId)
   const close = h('button', { class: 'btn', onclick: () => sheet.close() }, 'Chiudi')
+  const live = ch?.live && h('button', { class: 'btn', onclick: () => play(ch) }, '▶ Guarda in diretta')
   const ics = h('button', { class: 'btn pri', onclick: () => downloadIcs(p, ch) }, 'Aggiungi al calendario')
   sheet.replaceChildren(h('div', { class: 'sh' },
     p.img && h('img', { src: p.img, alt: '', loading: 'lazy', referrerpolicy: 'no-referrer', onerror: e => e.target.remove() }),
     h('h2', {}, p.t),
     p.sub && h('div', {}, p.sub),
-    h('div', { class: 'meta' }, `${ch?.name ?? chId} · ${fmtDay(p.s)} · ${fmt(p.s)}–${fmt(p.e)}${p.cat ? ' · ' + p.cat : ''}`),
+    h('div', { class: 'meta' }, `${ch?.lcn ? ch.lcn + ' · ' : ''}${ch?.name ?? chId} · ${fmtDay(p.s)} · ${fmt(p.s)}–${fmt(p.e)}${p.cat ? ' · ' + p.cat : ''}`),
     p.desc && h('p', {}, p.desc),
-    h('div', { class: 'acts' }, ics, close)))
+    h('div', { class: 'acts' }, live, ics, close)))
   sheet.showModal()
 }
 sheet.addEventListener('click', e => { if (e.target === sheet) sheet.close() })
