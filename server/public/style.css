@@ -93,11 +93,12 @@ dialog::backdrop{background:rgba(0,0,0,.5)}
 .recording-list{min-height:0;overflow:auto}
 .recording-list .res{align-items:center;cursor:default}
 .recording-list .rn,.recording-list .rc{white-space:normal;overflow-wrap:anywhere}
+.recording-actions{display:flex;flex-direction:column;gap:6px}
 .recording-search{font:inherit;color:var(--fg);background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:8px 12px;min-width:0}
 .recording-pages{display:flex;align-items:center;justify-content:space-between;gap:8px}
 .recording-pages[hidden]{display:none}
 .recording-form{display:flex;flex-direction:column;gap:10px;border:1px solid var(--line);border-radius:10px;padding:12px}
-.recording-form[hidden],.sh .btn[hidden]{display:none}
+.recording-form[hidden],.recordings-sheet[hidden],.sh .btn[hidden]{display:none}
 .recording-margins{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
 .recording-feedback ul{margin:6px 0 0;padding-inline-start:20px}
 @media (max-width:600px){

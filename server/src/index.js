@@ -81,7 +81,7 @@ async function recordingApi(q, res, req) {
   if (req.method === 'GET' || req.method === 'HEAD') {
     return json(res, await recordings.visible(recordings.list(), req.headers.host, req.socket.remoteAddress), 200, 'no-store')
   }
-  if (req.method !== 'POST' && req.method !== 'DELETE') return json(res, { error: 'Metodo non consentito' }, 405)
+  if (!['POST', 'PATCH', 'DELETE'].includes(req.method)) return json(res, { error: 'Metodo non consentito' }, 405)
   const origin = URL.parse(req.headers.origin || '')
   if (!origin || !['http:', 'https:'].includes(origin.protocol) || origin.host !== req.headers.host ||
     (req.headers['sec-fetch-site'] && req.headers['sec-fetch-site'] !== 'same-origin')) {
@@ -90,34 +90,50 @@ async function recordingApi(q, res, req) {
   if (req.method === 'DELETE') {
     return recordings.remove(q.get('id') || '') ? json(res, { ok: true }) : json(res, { error: 'Registrazione non annullabile' }, 409)
   }
-  if (q.get('action') === 'stop') {
+  if (req.method === 'POST' && q.get('action') === 'stop') {
     return recordings.finish(q.get('id') || '') ? json(res, { ok: true }, 202) :
       json(res, { error: 'La registrazione non è in corso' }, 409)
   }
-  const id = q.get('c')
-  const start = num(q.get('s'), NaN)
-  const channel = store.channels.get(id)
-  const programme = store.programme(id, start)
+  const editing = req.method === 'PATCH'
+  const scheduled = editing ? recordings.getById(q.get('id') || '') : null
+  if (editing && !scheduled) return json(res, { error: 'Registrazione non trovata' }, 404)
+  if (scheduled && scheduled.status !== 'scheduled') {
+    return json(res, { error: 'Puoi modificare solo le registrazioni programmate' }, 409)
+  }
+  const id = scheduled?.channel ?? q.get('c')
+  const start = scheduled?.start ?? num(q.get('s'), NaN)
+  const programme = scheduled ? { s: scheduled.start, e: scheduled.end } : store.programme(id, start)
   if (!programme) return json(res, { error: 'Programma non trovato' }, 404)
-  const stream = store.streams.get(id)
-  if (!stream || stream.web) return json(res, { error: 'Il canale non ha uno stream registrabile' }, 409)
-  if (programme.e <= Date.now()) return json(res, { error: 'Il programma è già terminato' }, 409)
+  if (!scheduled) {
+    const stream = store.streams.get(id)
+    if (!stream || stream.web) return json(res, { error: 'Il canale non ha uno stream registrabile' }, 409)
+  }
+  const now = Date.now()
+  if (programme.e <= now) return json(res, { error: 'Il programma è già terminato' }, 409)
   const before = q.get('before')
   const after = q.get('after')
   if ([before, after].some(value => value !== null && !validPadding(value))) {
     return json(res, { error: 'I margini devono essere minuti interi da 0 a 60' }, 400)
   }
-  const existing = recordings.get(id, start)
+  const existing = !editing && recordings.get(id, start)
   if (existing) return json(res, existing, 201, 'no-store')
+  const defaults = scheduled ? {
+    before: scheduled.start - scheduled.captureFrom,
+    after: scheduled.captureTo - scheduled.end,
+  } : recordings
   const margins = {
-    before: before === null ? recordings.before : Number(before) * 60000,
-    after: after === null ? recordings.after : Number(after) * 60000,
+    before: before === null ? defaults.before : Number(before) * 60000,
+    after: after === null ? defaults.after : Number(after) * 60000,
   }
-  const conflicts = recordings.conflicts(programme, margins)
+  const conflicts = recordings.conflicts(programme, margins, { now, excludeId: scheduled?.id })
   if (conflicts.length && q.get('confirm') !== conflicts.map(job => job.id).sort().join(',')) {
     return json(res, { error: 'Le registrazioni si sovrappongono', conflicts, limit: recordings.limit }, 409, 'no-store')
   }
-  return json(res, recordings.add(id, channel.name, programme, margins), 201, 'no-store')
+  if (scheduled) {
+    const updated = recordings.reschedule(scheduled.id, margins, now)
+    return updated ? json(res, updated, 200, 'no-store') : json(res, { error: 'Registrazione non modificabile' }, 409)
+  }
+  return json(res, recordings.add(id, store.channels.get(id).name, programme, margins), 201, 'no-store')
 }
 
 async function api(url, res, req) {

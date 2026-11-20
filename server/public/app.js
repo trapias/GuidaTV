@@ -344,6 +344,31 @@ function openRecordings() {
       } catch (err) { report(err.message) } finally { button.disabled = false }
     } }, label)
   }
+  function edit(job, source) {
+    const closeEditor = () => {
+      editor.remove()
+      panel.hidden = false
+      const target = source.isConnected ? source : close
+      target.focus()
+    }
+    const form = recordingForm({
+      programme: { s: job.start, e: job.end },
+      margins: { before: (job.start - job.captureFrom) / 60000, after: (job.captureTo - job.end) / 60000 },
+      params: { id: job.id }, method: 'PATCH', label: 'Salva modifiche', confirmLabel: 'Salva comunque',
+      onCancel: closeEditor,
+      onSaved: async () => {
+        closeEditor()
+        report('Orari aggiornati')
+        await pending
+        await load()
+      },
+    })
+    const heading = h('h2', { tabindex: '-1' }, 'Modifica registrazione')
+    const editor = h('div', { class: 'sh' }, heading, h('p', {}, job.title), form)
+    panel.hidden = true
+    sheet.append(editor)
+    heading.focus()
+  }
   function draw() {
     const query = search.value.trim().toLowerCase()
     const matches = jobs.filter(job => `${job.title} ${job.channelName}`.toLowerCase().includes(query))
@@ -363,7 +388,9 @@ function openRecordings() {
         h('div', { class: 'rc' }, recordingStatus(job)),
         h('div', { class: 'rc' }, recordingTime(job))),
       recordingPlay(job, report),
-      job.status === 'scheduled' && action(job, 'Annulla', cancelRecording),
+      job.status === 'scheduled' && h('div', { class: 'recording-actions' },
+        h('button', { class: 'btn', onclick: e => edit(job, e.currentTarget) }, 'Modifica'),
+        action(job, 'Annulla', cancelRecording)),
       job.status === 'failed' && action(job, 'Rimuovi', cancelRecording),
       job.status === 'recording' && job.stoppedAt == null && action(job, 'Ferma e salva', stopRecording),
     )) : [h('div', { class: 'empty' }, query ? 'Nessun risultato.' : 'Nessuna registrazione.')]))
@@ -386,8 +413,10 @@ function openRecordings() {
       list.textContent = 'Registrazioni non disponibili.'
     }
   }).finally(() => { pending = null })
-  sheet.replaceChildren(h('div', { class: 'sh recordings-sheet' }, h('h2', {}, 'Registrazioni'), search, list, pages, message,
-    h('div', { class: 'acts' }, h('button', { class: 'btn', autofocus: true, onclick: () => sheet.close() }, 'Chiudi'))))
+  const close = h('button', { class: 'btn', autofocus: true, onclick: () => sheet.close() }, 'Chiudi')
+  const panel = h('div', { class: 'sh recordings-sheet' }, h('h2', {}, 'Registrazioni'), search, list, pages, message,
+    h('div', { class: 'acts' }, close))
+  sheet.replaceChildren(panel)
   sheet.showModal()
   load()
   clearInterval(recordingTimer)
@@ -396,48 +425,40 @@ function openRecordings() {
 $('#recordings').addEventListener('click', openRecordings)
 sheet.addEventListener('close', () => clearInterval(recordingTimer))
 
-function recordingForm(chId, programme, onSaved) {
-  const margins = programme.recordingMargins
+function recordingForm({
+  programme, margins, params, method = 'POST', label = 'Programma registrazione', confirmLabel = 'Programma comunque',
+  onCancel, onSaved,
+}) {
   const input = name => h('input', { type: 'number', name, min: '0', max: '60', step: '1', required: true, value: margins[name] })
   const before = input('before')
   const after = input('after')
   const estimate = h('p', { class: 'meta' })
   const feedback = h('div', { class: 'recording-feedback', role: 'status', hidden: true })
-  const submit = h('button', { class: 'btn pri', type: 'submit' }, 'Programma registrazione')
-  const open = h('button', { class: 'btn', onclick: () => {
-    open.hidden = true
-    form.hidden = false
-    form.scrollIntoView({ block: 'nearest' })
-  } }, 'Registra')
-  const cancel = h('button', { class: 'btn', type: 'button', onclick: () => {
-    form.hidden = true
-    open.hidden = false
-    open.focus()
-  } }, 'Indietro')
+  const submit = h('button', { class: 'btn pri', type: 'submit' }, label)
+  const cancel = h('button', { class: 'btn', type: 'button', onclick: onCancel }, 'Indietro')
   let confirmation
   const refresh = () => {
     confirmation = undefined
-    submit.textContent = 'Programma registrazione'
+    submit.textContent = label
     feedback.hidden = true
     estimate.textContent = before.validity.valid && after.validity.valid
       ? `Cattura prevista ${captureWindow(programme.s - before.valueAsNumber * 60000,
         programme.e + after.valueAsNumber * 60000, programme.s)}` : ''
   }
-  const form = h('form', { class: 'recording-form', hidden: true, oninput: refresh, onsubmit: async e => {
+  const form = h('form', { class: 'recording-form', oninput: refresh, onsubmit: async e => {
     e.preventDefault()
-    const q = new URLSearchParams({ c: chId, s: programme.s, before: before.valueAsNumber, after: after.valueAsNumber })
+    const q = new URLSearchParams({ ...params, before: before.valueAsNumber, after: after.valueAsNumber })
     if (confirmation) q.set('confirm', confirmation)
     for (const control of [before, after, submit, cancel]) control.disabled = true
     try {
-      const job = await api(`recordings?${q}`, { method: 'POST' })
-      form.hidden = true
-      onSaved(job)
+      const job = await api(`recordings?${q}`, { method })
+      await onSaved(job)
     } catch (err) {
       feedback.hidden = false
       if (err.data?.conflicts) {
         const { conflicts, limit } = err.data
         confirmation = conflicts.map(job => job.id).sort().join(',')
-        submit.textContent = 'Programma comunque'
+        submit.textContent = confirmLabel
         feedback.replaceChildren(h('p', {}, `In alcuni orari supereresti il limite di ${limit} registrazioni in contemporanea.`),
           h('ul', {}, conflicts.map(job => h('li', {},
             `${job.title} · ${job.channelName} · ${captureWindow(job.captureFrom, job.captureTo, programme.s)}`))))
@@ -453,7 +474,7 @@ function recordingForm(chId, programme, onSaved) {
       h('label', { class: 'frow' }, 'Minuti dopo', after)),
     estimate, feedback, h('div', { class: 'acts' }, cancel, submit))
   refresh()
-  return { form, open }
+  return form
 }
 
 // ---------- dettaglio ----------
@@ -467,21 +488,38 @@ async function openDetail(chId, s) {
   const status = h('div', { class: 'meta', role: 'status' }, p.recording && recordingStatus(p.recording))
   const capture = p.recording && recordingTime(p.recording)
   const timing = h('div', { class: 'meta', hidden: !capture }, capture)
-  const record = p.recordingMargins && ch?.live && !ch.web && p.e > Date.now() && !p.recording &&
-    recordingForm(chId, p, job => {
-      status.textContent = recordingStatus(job)
-      timing.textContent = recordingTime(job) || ''
-      timing.hidden = !timing.textContent
-      close.focus()
+  let form, record
+  if (p.recordingMargins && ch?.live && !ch.web && p.e > Date.now() && !p.recording) {
+    record = h('button', { class: 'btn', onclick: () => {
+      record.hidden = true
+      form.hidden = false
+      form.scrollIntoView({ block: 'nearest' })
+    } }, 'Registra')
+    form = recordingForm({
+      programme: p, margins: p.recordingMargins, params: { c: chId, s },
+      onCancel: () => {
+        form.hidden = true
+        record.hidden = false
+        record.focus()
+      },
+      onSaved: job => {
+        form.hidden = true
+        status.textContent = recordingStatus(job)
+        timing.textContent = recordingTime(job) || ''
+        timing.hidden = !timing.textContent
+        close.focus()
+      },
     })
+    form.hidden = true
+  }
   sheet.replaceChildren(h('div', { class: 'sh' },
     p.img && h('img', { src: p.img, alt: '', loading: 'lazy', referrerpolicy: 'no-referrer', onerror: e => e.target.remove() }),
     h('h2', {}, p.t),
     p.sub && h('div', {}, p.sub),
     h('div', { class: 'meta' }, `${ch?.lcn ? ch.lcn + ' · ' : ''}${ch?.name ?? chId} · ${fmtDay(p.s)} · ${fmt(p.s)}–${fmt(p.e)}${p.cat ? ' · ' + p.cat : ''}`),
     p.desc && h('p', {}, p.desc),
-    status, timing, record?.form,
-    h('div', { class: 'acts' }, live, record?.open, recordingPlay(p.recording, text => { status.textContent = text }), ics, close)))
+    status, timing, form,
+    h('div', { class: 'acts' }, live, record, recordingPlay(p.recording, text => { status.textContent = text }), ics, close)))
   sheet.showModal()
 }
 sheet.addEventListener('click', e => { if (e.target === sheet) sheet.close() })

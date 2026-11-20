@@ -80,15 +80,19 @@ export class Recordings {
     return this.db.prepare('SELECT * FROM recordings WHERE channel = ? AND start = ?').get(channel, start) || null
   }
 
-  conflicts(programme, { before, after }, now = Date.now()) {
+  getById(id) {
+    return this.db.prepare('SELECT * FROM recordings WHERE id = ?').get(id) || null
+  }
+
+  conflicts(programme, { before, after }, { now = Date.now(), excludeId = '' } = {}) {
     const from = Math.max(now, programme.s - before)
     const to = programme.e + after
     if (from >= to) return []
     const jobs = this.db.prepare(`
       SELECT id, title, channelName, captureFrom, captureTo FROM recordings
       WHERE status IN ('scheduled', 'recording') AND stoppedAt IS NULL AND captureFrom < ? AND captureTo > ?
-        AND (status = 'recording' OR end > ?)
-    `).all(to, from, now)
+        AND (status = 'recording' OR end > ?) AND id <> ?
+    `).all(to, from, now, excludeId)
     const events = jobs.flatMap(job => [
       { time: Math.max(from, job.captureFrom), start: 1, job },
       { time: Math.min(to, job.captureTo), start: 0, job },
@@ -117,6 +121,14 @@ export class Recordings {
     `).run(id, channel, name, programme.t, programme.s, programme.e, programme.s - before,
       programme.e + after, archiveName(programme.t, name, programme.s, id))
     return this.get(channel, programme.s)
+  }
+
+  reschedule(id, { before, after }, now = Date.now()) {
+    return this.db.prepare(`
+      UPDATE recordings SET captureFrom = start - ?, captureTo = end + ?
+      WHERE id = ? AND status = 'scheduled' AND end > ?
+      RETURNING *
+    `).get(before, after, id, now) || null
   }
 
   remove(id) {

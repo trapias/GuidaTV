@@ -44,7 +44,7 @@ Dalla scheda di un programma su un canale con stream diretto, **Registra** apre 
 
 In **Registrazioni** puoi vedere l'orario di cattura previsto, annullare le prenotazioni future e usare **Ferma e salva** sulle registrazioni in corso per trasferire al NAS quanto già acquisito. Se fermi una cattura prima dell'orario di fine del programma indicato in guida, la registrazione è contrassegnata come parziale.
 
-Il margine predefinito è di 2 minuti prima e 10 dopo. Per modificarlo, imposta `RECORDINGS_BEFORE_MIN` e `RECORDINGS_AFTER_MIN` nel file `.env` accanto a `docker-compose.yml` e applica la configurazione con `docker compose up -d --no-deps web`. I valori sono minuti interi da 0 a 60. GuidaTV fissa i margini al momento della prenotazione. Per aggiornare una prenotazione futura già in coda, annullala e ricreala.
+Il margine predefinito è di 2 minuti prima e 10 dopo. Per modificarlo, imposta `RECORDINGS_BEFORE_MIN` e `RECORDINGS_AFTER_MIN` nel file `.env` accanto a `docker-compose.yml` e applica la configurazione con `docker compose up -d --no-deps web`. I valori sono minuti interi da 0 a 60. Per aggiornare i margini di una prenotazione già in coda, usa **Modifica** in **Registrazioni**. GuidaTV mostra i nuovi orari di cattura e verifica le sovrapposizioni prima del salvataggio.
 
 Il servizio cattura in MPEG-TS in `/data/recordings`. A registrazione conclusa, racchiude audio e video in un file MP4 senza ricodificarli e trasferisce il file via SMB a `//nas.local/TV`. Dopo un trasferimento fallito, il file resta in locale e il servizio riprova dopo un minuto. Nel frattempo può trasferire le altre registrazioni in coda.
 

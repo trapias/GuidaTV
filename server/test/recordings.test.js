@@ -126,9 +126,36 @@ test('i margini personalizzati contano solo quando le catture si sovrappongono d
     const overlapping = queue.add('rai4', 'Rai 4', programme('Secondo', 12, 20), { before: minute })
     const conflicts = queue.conflicts(third, { before: 0, after: 0 })
     assert.deepEqual(conflicts.map(job => job.id), [first.id, overlapping.id])
-    assert.deepEqual(queue.conflicts(third, { before: 0, after: 0 }, start + 12 * minute), [])
+    assert.deepEqual(queue.conflicts(third, { before: 0, after: 0 }, { now: start + 12 * minute }), [])
     queue.update(first.id, 'waiting')
     assert.deepEqual(queue.conflicts(third, { before: 0, after: 0 }), [])
+  } finally {
+    await queue.stop()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('una prenotazione resta la stessa dopo la modifica e non conta come concorrente di sé stessa', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'guidatv-reschedule-'))
+  const queue = new Recordings({ directory, before: 0, after: 0 })
+  try {
+    const now = Date.now()
+    const programme = { t: 'Film', s: now + 3600000, e: now + 7200000 }
+    const job = queue.add('iris', 'Iris', programme)
+    const other = queue.add('rai4', 'Rai 4', programme)
+    const margins = { before: 120000, after: 300000 }
+    const options = { now, excludeId: job.id }
+    assert.deepEqual(queue.conflicts(programme, margins, options), [])
+    const third = queue.add('la5', 'La 5', programme)
+    assert.deepEqual(new Set(queue.conflicts(programme, margins, options).map(row => row.id)), new Set([other.id, third.id]))
+
+    const updated = queue.reschedule(job.id, margins, now)
+    assert.deepEqual({ ...updated }, { ...job, captureFrom: job.start - margins.before, captureTo: job.end + margins.after })
+    assert.deepEqual(queue.getById(job.id), updated)
+    assert.equal(queue.reschedule(job.id, margins, job.end), null)
+    queue.update(job.id, 'recording')
+    assert.equal(queue.reschedule(job.id, { before: 0, after: 0 }, now), null)
+    assert.equal(queue.getById(job.id).captureTo, updated.captureTo)
   } finally {
     await queue.stop()
     await rm(directory, { recursive: true, force: true })
