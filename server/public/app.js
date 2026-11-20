@@ -131,18 +131,25 @@ const rank = c => { const i = TOP.indexOf(c.id); return i < 0 ? 1000 + Math.max(
 const byTelecomando = (a, b) => (a.lcn || 1e4) - (b.lcn || 1e4) || rank(a) - rank(b) || a.name.localeCompare(b.name, 'it', { numeric: true })
 
 // ---------- filtri ----------
-const GROUP_ORDER = ['Rai', 'Mediaset', 'Altri free', 'Sport', 'Cinema', 'News', 'Sky', 'Altri']
+const GROUP_ORDER = ['Rai', 'Mediaset', 'Altri free', 'Sport', 'Cinema', 'Serie TV', 'News', 'Sky', 'Altri']
+const PROGRAMME_FILTERS = new Map([
+  ['Cinema', 'movie'],
+  ['Serie TV', 'series'],
+  ['News', 'news'],
+])
 function visibleChannels() {
   const { group } = state
-  if (group === 'Tutti') return state.channels
+  if (group === 'Tutti' || PROGRAMME_FILTERS.has(group)) return state.channels
   if (group === 'Preferiti') return state.channels.filter(c => state.favs.has(c.id))
   return state.channels.filter(c => c.group === group)
 }
 function renderChips() {
   const present = new Set(state.channels.map(c => c.group))
-  const groups = ['Tutti', ...(state.favs.size ? ['Preferiti'] : []), ...GROUP_ORDER.filter(g => present.has(g))]
+  const groups = ['Tutti', ...(state.favs.size ? ['Preferiti'] : []), ...GROUP_ORDER.filter(g => present.has(g) || PROGRAMME_FILTERS.has(g))]
   chipsEl.replaceChildren(...groups.map(g => h('button', {
-    class: 'chip' + (g === state.group ? ' on' : ''), onclick: () => setGroup(g),
+    class: 'chip' + (g === state.group ? ' on' : ''),
+    'aria-pressed': String(g === state.group),
+    onclick: () => setGroup(g),
   }, g === 'Preferiti' ? '★ Preferiti' : g)))
 }
 function setGroup(g) { state.group = g; store.set('group', g); renderChips(); render() }
@@ -151,16 +158,20 @@ function setGroup(g) { state.group = g; store.set('group', g); renderChips(); re
 async function viewNow() {
   const list = visibleChannels()
   if (!list.length) return main.append(h('div', { class: 'empty' }, 'Nessun canale in questo filtro.'))
+  const type = PROGRAMME_FILTERS.get(state.group)
   const cards = h('div', { class: 'cards' })
-  main.append(cards)
+  const empty = h('div', { class: 'empty', hidden: true }, 'Nessun programma di questo tipo in onda.')
+  main.append(cards, empty)
   const draw = () => {
     const now = Date.now()
-    cards.replaceChildren(...list.map(ch => {
+    const matches = []
+    for (const ch of list) {
       const d = state.nowData[ch.id] || {}
       const cur = d.cur && d.cur[0] <= now && d.cur[1] > now ? d.cur : null
+      if (type && cur?.[5] !== type) continue
       const next = cur ? d.next : (d.next || d.cur)
       const pct = cur ? Math.min(100, ((now - cur[0]) / (cur[1] - cur[0])) * 100) : 0
-      return h('div', { class: 'card', onclick: () => cur ? openDetail(ch.id, cur[0]) : next && openDetail(ch.id, next[0]) },
+      matches.push(h('div', { class: 'card', onclick: () => cur ? openDetail(ch.id, cur[0]) : next && openDetail(ch.id, next[0]) },
         h('div', { class: 'head' }, lcnBadge(ch), logo(ch), h('span', { class: 'cname' }, ch.name), playBtn(ch), starBtn(ch)),
         cur ? [
           h('div', { class: 'ctitle' }, cur[2]),
@@ -168,9 +179,11 @@ async function viewNow() {
           h('div', { class: 'bar-p' }, h('i', { style: `width:${pct}%` })),
           h('div', { class: 'times' }, h('span', {}, fmt(cur[0])), h('span', {}, `${Math.max(0, Math.round((cur[1] - now) / 60000))} min`), h('span', {}, fmt(cur[1]))),
         ] : h('div', { class: 'csub' }, 'Nessun dato in onda'),
-        next && h('div', { class: 'next' }, h('b', {}, fmt(next[0])), ' ', next[2]),
-      )
-    }))
+        next && (!type || next[5] === type) && h('div', { class: 'next' }, h('b', {}, fmt(next[0])), ' ', next[2]),
+      ))
+    }
+    cards.replaceChildren(...matches)
+    empty.hidden = matches.length > 0
   }
   draw()
   timers.push(setInterval(async () => { try { state.nowData = await api('now'); draw() } catch {} }, 60000))
@@ -180,6 +193,7 @@ async function viewNow() {
 const schedCache = new Map()
 async function viewGrid() {
   const list = visibleChannels()
+  const type = PROGRAMME_FILTERS.get(state.group)
   const days = h('div', { class: 'days' }, [0, 1, 2, 3].map(o => h('button', {
     class: 'chip' + (o === state.day ? ' on' : ''), onclick: () => { state.day = o; render() },
   }, o === 0 ? 'Oggi' : o === 1 ? 'Domani' : new Date(dayStart(o)).toLocaleDateString('it-IT', { weekday: 'short', day: 'numeric' }))))
@@ -193,6 +207,7 @@ async function viewGrid() {
     sched = { t: Date.now(), data: await api(`schedule?from=${from}&to=${to}`) }
     schedCache.set(key, sched)
   }
+  if (!days.isConnected) return
   const ppm = innerWidth < 600 ? 3 : 4, colW = innerWidth < 600 ? 92 : 150, laneW = 1440 * ppm
   const grid = h('div', { class: 'grid', style: `width:${colW + laneW}px` })
   const head = h('div', { class: 'ghead' }, h('div', { class: 'corner', style: `width:${colW}px` }),
@@ -201,17 +216,21 @@ async function viewGrid() {
   const liveEls = []
   for (const ch of list) {
     const lane = h('div', { class: 'lane', style: `width:${laneW}px` })
-    for (const [s, e, t, sub] of sched.data[ch.id] || []) {
+    for (const [s, e, t, , , programmeType] of sched.data[ch.id] || []) {
+      if (type && programmeType !== type) continue
       const l = (Math.max(s, from) - from) / 60000 * ppm
-      const w = (Math.min(e, to) - Math.max(s, from)) / 60000 * ppm - 2
-      if (w < 3) continue
+      const width = (Math.min(e, to) - Math.max(s, from)) / 60000 * ppm - 2
+      if (!type && width < 3) continue
+      const w = Math.max(3, width)
       const el = h('div', { class: 'prog', style: `left:${l}px;width:${w}px`, title: `${fmt(s)} ${t}`, onclick: () => openDetail(ch.id, s) },
         h('div', { class: 'pt' }, t), w > 70 && h('div', { class: 'ps' }, `${fmt(s)}–${fmt(e)}`))
       el.dataset.s = s; el.dataset.e = e; liveEls.push(el)
       lane.append(el)
     }
+    if (type && !lane.childElementCount) continue
     grid.append(h('div', { class: 'grow' }, h('div', { class: 'gch', style: `width:${colW}px`, onclick: () => ch.live && play(ch), title: ch.live ? 'Guarda in diretta' : '' }, lcnBadge(ch), logo(ch), h('span', {}, ch.name), ch.live && h('i', { class: 'dot' })), lane))
   }
+  if (type && !liveEls.length) return main.append(h('div', { class: 'empty' }, 'Nessun programma di questo tipo nel giorno selezionato.'))
   const wrap = h('div', { class: 'gridwrap' }, grid)
   main.append(wrap)
 

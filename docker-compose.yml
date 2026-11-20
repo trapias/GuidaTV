@@ -2,7 +2,7 @@
 # Accesso: http://<ip-lan>:8085  oppure  http://<nome-host-tailscale>:8085
 services:
   epg:
-    image: ghcr.io/iptv-org/epg:master
+    build: ./epg
     restart: unless-stopped
     environment:
       TZ: Europe/Rome

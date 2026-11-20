@@ -5,6 +5,7 @@ import { parseXmltv } from './xmltv.js'
 import channelLogos from './logos.json' with { type: 'json' }
 
 const fold = s => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
+const programmeSummary = p => [p.s, p.e, p.t, p.sub, p.cat, p.type]
 
 export class Store {
   constructor({ epgUrl, dataDir, log = console, lcn = {} }) {
@@ -71,7 +72,7 @@ export class Store {
       if (ids && !ids.has(ch.id)) continue
       out[ch.id] = ch.programmes
         .filter(p => p.e > from && p.s < to)
-        .map(p => [p.s, p.e, p.t, p.sub, p.cat])
+        .map(programmeSummary)
     }
     return out
   }
@@ -81,17 +82,16 @@ export class Store {
     for (const ch of this.channels.values()) {
       const i = ch.programmes.findIndex(p => p.e > at)
       if (i < 0) { out[ch.id] = { cur: null, next: null }; continue }
-      const f = p => p && [p.s, p.e, p.t, p.sub, p.cat]
       const cur = ch.programmes[i].s <= at ? ch.programmes[i] : null
       const next = cur ? ch.programmes[i + 1] : ch.programmes[i]
-      out[ch.id] = { cur: f(cur), next: f(next) }
+      out[ch.id] = { cur: cur && programmeSummary(cur), next: next && programmeSummary(next) }
     }
     return out
   }
 
   programme(id, s) {
     const p = this.channels.get(id)?.programmes.find(x => x.s === s)
-    return p ? { s: p.s, e: p.e, t: p.t, sub: p.sub, cat: p.cat, desc: p.desc, img: p.img } : null
+    return p ? { s: p.s, e: p.e, t: p.t, sub: p.sub, cat: p.cat, type: p.type, desc: p.desc, img: p.img } : null
   }
 
   search(q, from, limit = 120) {

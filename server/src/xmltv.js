@@ -1,4 +1,5 @@
 import { XMLParser } from 'fast-xml-parser'
+import { programmeType } from './programme-type.js'
 
 const parser = new XMLParser({
   ignoreAttributes: false,
@@ -59,10 +60,12 @@ export function parseXmltv(xml) {
     const e = parseTime(p['@stop'])
     const t = text(p.title)
     if (!t || Number.isNaN(s) || Number.isNaN(e) || e <= s) continue
+    const categories = (Array.isArray(p.category) ? p.category : [p.category]).map(text).filter(Boolean)
     ch.programmes.push({
       s, e, t,
       sub: text(p['sub-title']),
-      cat: text(p.category),
+      cat: categories[0] || '',
+      type: programmeType(ch.id, t, categories),
       desc: text(p.desc),
       img: text(p.image),
     })
