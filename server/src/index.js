@@ -6,6 +6,9 @@ import { fileURLToPath } from 'node:url'
 import { Store } from './store.js'
 import { loadLcn } from './lcn.js'
 import { loadPlaylist, matchStreams, singleM3u } from './streams.js'
+import { streamInputArgs } from './ffmpeg.js'
+import { Recordings } from './recordings.js'
+import { SmbArchive } from './smb.js'
 
 const PORT = Number(process.env.PORT || 8080)
 const EPG_URL = process.env.EPG_URL || 'http://epg:3000/guide.xml'
@@ -15,6 +18,22 @@ const PUBLIC_DIR = process.env.PUBLIC_DIR || fileURLToPath(new URL('../public', 
 
 const STREAMS_SOURCE = process.env.STREAMS_M3U || '' // URL o file; default /data/streams.m3u
 const store = new Store({ epgUrl: EPG_URL, dataDir: DATA_DIR, lcn: await loadLcn(DATA_DIR) })
+const recordingShare = process.env.RECORDINGS_SMB
+const padding = (value, fallback) => {
+  const minutes = Number(value ?? fallback)
+  return (Number.isInteger(minutes) && minutes >= 0 && minutes <= 60 ? minutes : fallback) * 60000
+}
+const recordings = recordingShare && new Recordings({
+  directory: join(DATA_DIR, 'recordings'),
+  store,
+  archive: new SmbArchive({
+    share: recordingShare,
+    ip: process.env.RECORDINGS_SMB_IP,
+    credentials: process.env.RECORDINGS_SMB_CREDENTIALS || '/run/guidatv/smb.credentials',
+  }),
+  before: padding(process.env.RECORDINGS_BEFORE_MIN, 2),
+  after: padding(process.env.RECORDINGS_AFTER_MIN, 10),
+})
 
 // Stream con audio/video su tracce HLS separate (Mediaset): VLC li desincronizza, quindi li uniamo
 // in un unico MPEG-TS senza ricodificare (-c copy). Un ffmpeg per spettatore, chiuso alla disconnessione.
@@ -25,11 +44,7 @@ function liveMux(id, req, res) {
   const s = store.streams.get(id)
   if (!s?.mux) return json(res, { error: 'nessuno stream' }, 404)
   if (muxing >= MAX_MUX) return json(res, { error: 'troppi stream attivi' }, 503)
-  const args = ['-hide_banner', '-loglevel', 'error', '-fflags', '+genpts', '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5']
-  if (s.ua) args.push('-user_agent', s.ua)
-  if (s.referrer) args.push('-referer', s.referrer)
-  args.push('-i', s.url, '-map', '0:v:0', '-map', '0:a:0', '-c', 'copy', '-f', 'mpegts', 'pipe:1')
-  const ff = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'] })
+  const ff = spawn('ffmpeg', [...streamInputArgs(s), 'pipe:1'], { stdio: ['ignore', 'pipe', 'pipe'] })
   muxing++
   let done = false
   const end = () => { if (done) return; done = true; muxing--; ff.kill('SIGKILL') }
@@ -59,10 +74,33 @@ const json = (res, data, status = 200, cache = 'no-cache') => {
 }
 const num = (v, d) => (Number.isFinite(Number(v)) && v !== null && v !== '' ? Number(v) : d)
 
+function recordingApi(q, res, req) {
+  if (!recordings) return json(res, { error: 'Registrazioni disattivate' }, 404)
+  if (req.method === 'GET' || req.method === 'HEAD') return json(res, recordings.list(), 200, 'no-store')
+  if (req.method !== 'POST' && req.method !== 'DELETE') return json(res, { error: 'Metodo non consentito' }, 405)
+  const origin = URL.parse(req.headers.origin || '')
+  if (!origin || !['http:', 'https:'].includes(origin.protocol) || origin.host !== req.headers.host ||
+    (req.headers['sec-fetch-site'] && req.headers['sec-fetch-site'] !== 'same-origin')) {
+    return json(res, { error: 'Richiesta da un’altra origine' }, 403)
+  }
+  if (req.method === 'DELETE') {
+    return recordings.remove(q.get('id') || '') ? json(res, { ok: true }) : json(res, { error: 'Registrazione non annullabile' }, 409)
+  }
+  const id = q.get('c')
+  const start = num(q.get('s'), NaN)
+  const channel = store.channels.get(id)
+  const programme = store.programme(id, start)
+  if (!programme) return json(res, { error: 'Programma non trovato' }, 404)
+  const stream = store.streams.get(id)
+  if (!stream || stream.web) return json(res, { error: 'Il canale non ha uno stream registrabile' }, 409)
+  if (programme.e <= Date.now()) return json(res, { error: 'Il programma è già terminato' }, 409)
+  return json(res, recordings.add(id, channel.name, programme), 201, 'no-store')
+}
+
 async function api(url, res, req) {
   const q = url.searchParams
   switch (url.pathname) {
-    case '/api/health': return json(res, store.health())
+    case '/api/health': return json(res, { ...store.health(), recordingEnabled: Boolean(recordings) })
     case '/api/channels': return json(res, store.listChannels())
     case '/api/live': return json(res, { error: 'usa /api/live/<id>.ts' }, 404)
     case '/api/stream': { // per i player con schema URL personalizzato
@@ -85,7 +123,7 @@ async function api(url, res, req) {
     }
     case '/api/programme': {
       const p = store.programme(q.get('c'), num(q.get('s'), NaN))
-      return p ? json(res, p) : json(res, { error: 'non trovato' }, 404)
+      return p ? json(res, { ...p, recording: recordings ? recordings.get(q.get('c'), p.s) : null }) : json(res, { error: 'non trovato' }, 404)
     }
     case '/api/search': return json(res, store.search(q.get('q') || '', num(q.get('from'), Date.now())))
     default: return json(res, { error: 'non trovato' }, 404)
@@ -111,6 +149,7 @@ async function serveStatic(pathname, res) {
 const server = createServer(async (req, res) => {
   try {
     const url = new URL(req.url, 'http://x')
+    if (url.pathname === '/api/recordings') return recordingApi(url.searchParams, res, req)
     if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(405); return res.end() }
     if (url.pathname.startsWith('/api/')) {
       const m = /^\/api\/live\/([^/]+)\.ts$/.exec(url.pathname)
@@ -125,6 +164,7 @@ const server = createServer(async (req, res) => {
 })
 
 await store.loadCache()
+if (recordings) await recordings.start()
 server.listen(PORT, () => console.log(`GuidaTV in ascolto su :${PORT}`))
 
 // L'epg può metterci minuti ad essere pronto al primo avvio: ritenta spesso finché non c'è una guida.
@@ -135,4 +175,9 @@ const loop = async () => {
   setTimeout(loop, (store.channels.size ? REFRESH_MIN : 1) * 60000)
 }
 loop()
-for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => server.close(() => process.exit(0)))
+async function shutdown() {
+  server.close()
+  if (recordings) await recordings.stop()
+  process.exit(0)
+}
+for (const sig of ['SIGINT', 'SIGTERM']) process.once(sig, shutdown)

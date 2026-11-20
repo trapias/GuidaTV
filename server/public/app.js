@@ -11,7 +11,7 @@ const state = {
   favs: new Set(store.get('favs', [])),
   view: store.get('view', 'now'),
   group: store.get('group', 'Tutti'),
-  day: 0,
+  day: 0, recordingEnabled: false,
   query: '',
   player: { mode: /iPhone|iPad|iPod/.test(navigator.userAgent) ? 'scheme' : 'm3u', tpl: 'vlc://{url}', ...store.get('player', {}) },
 }
@@ -29,10 +29,11 @@ function h(tag, props = {}, ...kids) {
   for (const kid of kids.flat()) if (kid != null && kid !== false) el.append(kid.nodeType ? kid : document.createTextNode(kid))
   return el
 }
-const api = async path => {
-  const r = await fetch('/api/' + path)
-  if (!r.ok) throw new Error(`${path}: HTTP ${r.status}`)
-  return r.json()
+const api = async (path, options) => {
+  const r = await fetch('/api/' + path, options)
+  const data = await r.json()
+  if (!r.ok) throw new Error(data?.error || `${path}: HTTP ${r.status}`)
+  return data
 }
 const fmt = ms => new Date(ms).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })
 const fmtDay = ms => new Date(ms).toLocaleDateString('it-IT', { weekday: 'long', day: 'numeric', month: 'long' })
@@ -268,6 +269,46 @@ async function viewSearch() {
   box.replaceChildren(...out)
 }
 
+// ---------- registrazioni ----------
+const recordingLabels = {
+  scheduled: 'Programmata', recording: 'In registrazione', waiting: 'In attesa di trasferimento',
+  saved: 'Salvata sul NAS', failed: 'Registrazione fallita',
+}
+const recordingStatus = job => [recordingLabels[job.status], job.partial && 'Parziale', job.error].filter(Boolean).join(' · ')
+const cancelRecording = job => api(`recordings?id=${encodeURIComponent(job.id)}`, { method: 'DELETE' })
+let recordingTimer
+function openRecordings() {
+  const list = h('div', { class: 'results' }, 'Caricamento…')
+  let loading = false
+  const load = async () => {
+    if (loading) return
+    loading = true
+    try {
+      const jobs = await api('recordings')
+      if (!list.isConnected || !sheet.open) return
+      list.replaceChildren(...(jobs.length ? jobs.map(job => h('div', { class: 'res' },
+        h('div', { class: 'rm' },
+          h('div', { class: 'rn' }, job.title),
+          h('div', { class: 'rc' }, `${job.channelName} · ${fmtDay(job.start)} · ${fmt(job.start)}–${fmt(job.end)}`),
+          h('div', { class: 'rc' }, recordingStatus(job))),
+        job.status === 'scheduled' && h('button', { class: 'btn', onclick: async () => {
+          try { await cancelRecording(job); await load() } catch (err) { showStatus(err.message, 4000) }
+        } }, 'Annulla'),
+      )) : [h('div', { class: 'empty' }, 'Nessuna registrazione.')]))
+    } catch (err) {
+      if (list.isConnected) list.textContent = 'Registrazioni non disponibili.'
+    } finally { loading = false }
+  }
+  sheet.replaceChildren(h('div', { class: 'sh' }, h('h2', {}, 'Registrazioni'), list,
+    h('div', { class: 'acts' }, h('button', { class: 'btn', onclick: () => sheet.close() }, 'Chiudi'))))
+  sheet.showModal()
+  load()
+  clearInterval(recordingTimer)
+  recordingTimer = setInterval(load, 5000)
+}
+$('#recordings').addEventListener('click', openRecordings)
+sheet.addEventListener('close', () => clearInterval(recordingTimer))
+
 // ---------- dettaglio ----------
 async function openDetail(chId, s) {
   let p
@@ -276,13 +317,28 @@ async function openDetail(chId, s) {
   const close = h('button', { class: 'btn', onclick: () => sheet.close() }, 'Chiudi')
   const live = ch?.live && h('button', { class: 'btn', onclick: () => play(ch) }, ch.web ? '↗ Guarda sul sito/app ufficiale' : '▶ Guarda in diretta')
   const ics = h('button', { class: 'btn pri', onclick: () => downloadIcs(p, ch) }, 'Aggiungi al calendario')
+  const status = h('div', { class: 'meta', role: 'status' }, p.recording && recordingStatus(p.recording))
+  const record = state.recordingEnabled && ch?.live && !ch.web && p.e > Date.now() && !p.recording &&
+    h('button', { class: 'btn', onclick: async e => {
+      const button = e.currentTarget
+      button.disabled = true
+      try {
+        const job = await api(`recordings?c=${encodeURIComponent(chId)}&s=${s}`, { method: 'POST' })
+        status.textContent = recordingStatus(job)
+        button.remove()
+      } catch (err) {
+        status.textContent = err.message
+        button.disabled = false
+      }
+    } }, 'Registra')
   sheet.replaceChildren(h('div', { class: 'sh' },
     p.img && h('img', { src: p.img, alt: '', loading: 'lazy', referrerpolicy: 'no-referrer', onerror: e => e.target.remove() }),
     h('h2', {}, p.t),
     p.sub && h('div', {}, p.sub),
     h('div', { class: 'meta' }, `${ch?.lcn ? ch.lcn + ' · ' : ''}${ch?.name ?? chId} · ${fmtDay(p.s)} · ${fmt(p.s)}–${fmt(p.e)}${p.cat ? ' · ' + p.cat : ''}`),
     p.desc && h('p', {}, p.desc),
-    h('div', { class: 'acts' }, live, ics, close)))
+    status,
+    h('div', { class: 'acts' }, live, record, ics, close)))
   sheet.showModal()
 }
 sheet.addEventListener('click', e => { if (e.target === sheet) sheet.close() })
@@ -328,6 +384,8 @@ async function init() {
     state.channels = channels.filter(c => c.n > 0).sort(byTelecomando)
     state.byId = new Map(state.channels.map(c => [c.id, c]))
     state.nowData = nowData
+    state.recordingEnabled = health.recordingEnabled
+    $('#recordings').hidden = !state.recordingEnabled
     if (!state.channels.length) {
       main.replaceChildren(h('div', { class: 'empty' }, 'La guida non è ancora pronta: il primo download può richiedere qualche minuto. Riprova tra poco.'))
       return setTimeout(init, 20000)

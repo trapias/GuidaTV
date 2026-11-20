@@ -1,5 +1,5 @@
 FROM node:22-alpine
-RUN apk add --no-cache ffmpeg
+RUN apk add --no-cache ffmpeg samba-client
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci --omit=dev

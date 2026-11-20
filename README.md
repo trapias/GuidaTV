@@ -38,5 +38,13 @@ In **Cinema**, **Serie TV** e **News** la guida mostra i programmi corrispondent
 - Il player è per-dispositivo (⚙ in alto): **.m3u** (il browser scarica un file che il sistema apre con VLC, funziona ovunque),
   **schema URL** (`vlc://{url}`, utile su iOS/Android) o **copia indirizzo**.
 
+## Registrazioni
+
+Dalla scheda di un programma su un canale con stream diretto, **Registra** pianifica la cattura sul server. In **Registrazioni** si vedono gli stati e si possono annullare le prenotazioni future. Il margine predefinito è di 2 minuti prima e 10 dopo, modificabile con `RECORDINGS_BEFORE_MIN` e `RECORDINGS_AFTER_MIN` nell'ambiente del servizio web.
+
+Il servizio cattura in MPEG-TS in `/data/recordings`. A registrazione conclusa, racchiude audio e video in un file MP4 senza ricodificarli e trasferisce il file via SMB a `//nas.local/TV`. Se il NAS è irraggiungibile, i file restano in locale e il trasferimento viene ritentato.
+
+Compose legge le credenziali da `~/.config/guidatv/smb.credentials` (permessi `600`), con le righe `username=nome_utente` e `password=…`. L'utente SMB deve poter creare e rinominare i file nella condivisione. `GUIDATV_SMB_DIR`, `GUIDATV_SMB_SHARE` e `GUIDATV_SMB_IP` possono essere impostati nell'ambiente di Compose per usare percorsi o indirizzi diversi. Un valore vuoto per `GUIDATV_SMB_SHARE` disattiva la funzione.
+
 ## Sviluppo
 `cd server && npm install && npm test`
