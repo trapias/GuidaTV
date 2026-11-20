@@ -8,6 +8,8 @@ import { remuxMp4, streamInputArgs } from './ffmpeg.js'
 
 const MIN_FREE = 1024 ** 3
 const RETRY_MS = 60000
+const ARCHIVE_CACHE_MS = 10000
+const archivedName = row => row.partial ? row.filename.replace(/(\.(?:mp4|ts))$/, ' - parziale$1') : row.filename
 const fileSize = async path => {
   try { return (await stat(path)).size } catch (err) { if (err.code === 'ENOENT') return 0; throw err }
 }
@@ -49,6 +51,26 @@ export class Recordings {
 
   list() {
     return this.db.prepare('SELECT * FROM recordings ORDER BY start DESC').all()
+  }
+
+  async visible(rows, requestHost, remoteAddress) {
+    if (!rows.some(row => row.status === 'saved')) return rows
+    if (!this.archiveCheck || Date.now() >= this.archiveCheck.expires) {
+      const check = { expires: Infinity }
+      check.result = this.archive.files(this.directory, this.abort.signal).then(files => {
+        this.archiveFiles = files
+        return { files, verified: true }
+      }).catch(() => ({ files: this.archiveFiles, verified: false }))
+        .finally(() => { check.expires = Date.now() + ARCHIVE_CACHE_MS })
+      this.archiveCheck = check
+    }
+    const { files, verified } = await this.archiveCheck.result
+    return rows.flatMap(row => {
+      if (row.status !== 'saved') return [row]
+      const filename = archivedName(row)
+      if (files && !files.has(filename.toLowerCase())) return []
+      return [{ ...row, archiveVerified: verified, playUrl: verified ? this.archive.url(filename, requestHost, remoteAddress) : null }]
+    })
   }
 
   get(channel, start) {
@@ -176,12 +198,17 @@ export class Recordings {
       }
     }
 
-    const filename = row.partial ? row.filename.replace(/\.mp4$/, ' - parziale.mp4') : row.filename
+    const filename = archivedName(row)
     try {
       await this.archive.publish(this.directory, localName, filename, this.abort.signal)
     } catch {
       return this.retryUpload(row, 'NAS non disponibile, nuovo tentativo in attesa')
     }
+    // Attendi l'eventuale verifica iniziata prima del trasferimento e invalida il suo risultato.
+    const check = this.archiveCheck
+    await check?.result
+    this.archiveFiles?.add(filename.toLowerCase())
+    if (this.archiveCheck === check) this.archiveCheck = null
     this.update(row.id, 'saved', row.partial ? row.error : null, row.partial)
     await this.clean(capture)
     await this.clean(mp4)
@@ -200,7 +227,7 @@ export class Recordings {
     clearInterval(this.timer)
     this.abort.abort()
     for (const capture of this.active.values()) capture.stop('Registrazione interrotta dal riavvio')
-    await Promise.allSettled([this.ticking, this.upload, ...[...this.active.values()].map(capture => capture.done)])
+    await Promise.allSettled([this.ticking, this.upload, this.archiveCheck?.result, ...[...this.active.values()].map(capture => capture.done)])
     this.db.close()
   }
 }

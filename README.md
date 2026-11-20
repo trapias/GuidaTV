@@ -40,9 +40,15 @@ In **Cinema**, **Serie TV** e **News** la guida mostra i programmi corrispondent
 
 ## Registrazioni
 
-Dalla scheda di un programma su un canale con stream diretto, **Registra** pianifica la cattura sul server. In **Registrazioni** si vedono gli stati e si possono annullare le prenotazioni future. Il margine predefinito è di 2 minuti prima e 10 dopo, modificabile con `RECORDINGS_BEFORE_MIN` e `RECORDINGS_AFTER_MIN` nell'ambiente del servizio web.
+Dalla scheda di un programma su un canale con stream diretto, **Registra** pianifica la cattura sul server. In **Registrazioni** si vedono gli stati e si possono annullare le prenotazioni future.
+
+Il margine predefinito è di 2 minuti prima e 10 dopo. Per modificarlo, imposta `RECORDINGS_BEFORE_MIN` e `RECORDINGS_AFTER_MIN` nel file `.env` accanto a `docker-compose.yml` e applica la configurazione con `docker compose up -d --no-deps web`. I valori sono minuti interi da 0 a 60. GuidaTV fissa i margini al momento della prenotazione. Per aggiornare una prenotazione futura già in coda, annullala e ricreala.
 
 Il servizio cattura in MPEG-TS in `/data/recordings`. A registrazione conclusa, racchiude audio e video in un file MP4 senza ricodificarli e trasferisce il file via SMB a `//nas.local/TV`. Se il NAS è irraggiungibile, i file restano in locale e il trasferimento viene ritentato.
+
+Le registrazioni salvate restano visibili finché il file è nella condivisione. GuidaTV verifica il NAS mentre la finestra è aperta. Una cancellazione o uno spostamento si riflette alla verifica successiva. La finestra mostra prima le registrazioni in corso, in attesa o programmate e permette di cercare per titolo o canale, con 10 risultati per pagina. Le registrazioni fallite restano visibili finché vengono rimosse dalla finestra.
+
+**Riproduci** usa il player configurato in ⚙ e apre un indirizzo SMB diretto al NAS. Su LAN usa l'host di `GUIDATV_SMB_SHARE`. Quando GuidaTV è aperta con un indirizzo IP Tailscale o un nome MagicDNS completo (`.ts.net`), usa `GUIDATV_SMB_TAILSCALE_HOST` (predefinito in Compose a `100.100.10.20`). Il dispositivo che riproduce deve poter accedere alla condivisione SMB e VLC può chiedere le credenziali del NAS.
 
 Compose legge le credenziali da `~/.config/guidatv/smb.credentials` (permessi `600`), con le righe `username=nome_utente` e `password=…`. L'utente SMB deve poter creare e rinominare i file nella condivisione. `GUIDATV_SMB_DIR`, `GUIDATV_SMB_SHARE` e `GUIDATV_SMB_IP` possono essere impostati nell'ambiente di Compose per usare percorsi o indirizzi diversi. Un valore vuoto per `GUIDATV_SMB_SHARE` disattiva la funzione.
 

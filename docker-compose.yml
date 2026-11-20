@@ -27,8 +27,11 @@ services:
       EPG_URL: http://epg:3000/guide.xml
       REFRESH_MIN: "20"
       STREAMS_M3U: /streams/official.m3u   # solo stream ufficiali; ricaricata ogni ~6 h
+      RECORDINGS_BEFORE_MIN: ${RECORDINGS_BEFORE_MIN:-2}
+      RECORDINGS_AFTER_MIN: ${RECORDINGS_AFTER_MIN:-10}
       RECORDINGS_SMB: ${GUIDATV_SMB_SHARE-//nas.local/TV}
       RECORDINGS_SMB_IP: ${GUIDATV_SMB_IP-192.168.1.10}
+      RECORDINGS_SMB_TAILSCALE_HOST: ${GUIDATV_SMB_TAILSCALE_HOST-100.100.10.20}
     volumes:
       - guidatv-data:/data   # ultima guida valida, usata se epg è giù
       - ./streams:/streams:ro

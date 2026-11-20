@@ -83,25 +83,36 @@ const MODES = {
   copy: 'Copia l\'indirizzo dello stream',
 }
 const savePlayer = () => store.set('player', state.player)
-async function play(ch) {
-  if (ch.web) { // link ufficiale (app RaiPlay su iPhone via universal link, o sito): non serve il player esterno
-    const a = h('a', { href: ch.web, target: '_blank', rel: 'noopener' }); document.body.append(a); a.click(); a.remove(); return
-  }
+const clickLink = props => {
+  const a = h('a', props)
+  document.body.append(a); a.click(); a.remove()
+}
+function downloadFile(filename, content, type) {
+  const url = URL.createObjectURL(new Blob([content], { type }))
+  clickLink({ href: url, download: filename })
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+async function openPlayer(name, playlist, stream, report = showStatus) {
   const { mode, tpl } = state.player
   try {
     if (mode === 'm3u') {
-      const a = h('a', { href: `/api/play.m3u?c=${encodeURIComponent(ch.id)}`, download: `${ch.id}.m3u` })
-      document.body.append(a); a.click(); a.remove()
-      return showStatus(`Apro ${ch.name} nel player…`, 3000)
+      playlist()
+      return report(`Apro ${name} nel player…`, 3000)
     }
-    const s = await api(`stream?c=${encodeURIComponent(ch.id)}`)
+    const s = typeof stream === 'function' ? await stream() : stream
     if (mode === 'copy') {
-      try { await navigator.clipboard.writeText(s.url) } catch { return prompt('Copia l\'indirizzo dello stream:', s.url) }
-      return showStatus('Indirizzo copiato', 3000)
+      try { await navigator.clipboard.writeText(s.url) } catch { return prompt('Copia l\'indirizzo:', s.url) }
+      return report('Indirizzo copiato', 3000)
     }
-    if (!/^[a-z][a-z0-9+.-]*:/i.test(tpl) || /^(javascript|data|vbscript):/i.test(tpl)) return showStatus('Schema del player non valido (vedi ⚙)', 5000)
+    if (!/^[a-z][a-z0-9+.-]*:/i.test(tpl) || /^(javascript|data|vbscript):/i.test(tpl)) return report('Schema del player non valido (vedi ⚙)', 5000)
     location.href = tpl.replaceAll('{urlenc}', encodeURIComponent(s.url)).replaceAll('{url}', s.url).replaceAll('{name}', encodeURIComponent(s.name))
-  } catch { showStatus('Stream non disponibile', 4000) }
+  } catch { report('Riproduzione non disponibile', 4000) }
+}
+function play(ch) {
+  if (ch.web) return clickLink({ href: ch.web, target: '_blank', rel: 'noopener' })
+  const channel = encodeURIComponent(ch.id)
+  return openPlayer(ch.name, () => clickLink({ href: `/api/play.m3u?c=${channel}`, download: `${ch.id}.m3u` }),
+    () => api(`stream?c=${channel}`))
 }
 const playBtn = ch => !ch.live ? null : ch.web
   ? h('a', { class: 'playb web', href: ch.web, target: '_blank', rel: 'noopener', 'aria-label': 'Guarda sul sito/app ufficiale',
@@ -119,7 +130,7 @@ function openSettings() {
     state.player = { mode: mode.value, tpl: tpl.value.trim() || 'vlc://{url}' }; savePlayer(); sheet.close()
   } }, 'Salva')
   sheet.replaceChildren(h('div', { class: 'sh' }, h('h2', {}, 'Player esterno'),
-    h('p', {}, 'Il pulsante ▶ compare sui canali con uno stream configurato sul server. Questa scelta vale solo per questo dispositivo.'),
+    h('p', {}, 'Questa scelta vale per le dirette e le registrazioni su questo dispositivo.'),
     h('label', { class: 'frow' }, 'Come aprire lo stream', mode), row,
     h('div', { class: 'acts' }, save, h('button', { class: 'btn', onclick: () => sheet.close() }, 'Annulla'))))
   sheet.showModal()
@@ -274,33 +285,92 @@ const recordingLabels = {
   scheduled: 'Programmata', recording: 'In registrazione', waiting: 'In attesa di trasferimento',
   saved: 'Salvata sul NAS', failed: 'Registrazione fallita',
 }
-const recordingStatus = job => [recordingLabels[job.status], job.partial && 'Parziale', job.error].filter(Boolean).join(' · ')
+const recordingStatus = job => [
+  job.archiveVerified === false ? 'NAS non verificabile' : recordingLabels[job.status],
+  job.partial && 'Parziale', job.error,
+].filter(Boolean).join(' · ')
 const cancelRecording = job => api(`recordings?id=${encodeURIComponent(job.id)}`, { method: 'DELETE' })
+const recordingPlay = (job, report) => job?.playUrl && h('button', {
+  class: 'btn', 'aria-label': `Riproduci ${job.title}`, onclick: () => {
+    const name = job.title.replace(/[\r\n]+/g, ' ')
+    return openPlayer(name, () => downloadFile(`registrazione-${job.id.slice(0, 8)}.m3u`,
+      `#EXTM3U\n#EXTINF:-1,${name}\n${job.playUrl}\n`, 'audio/x-mpegurl;charset=utf-8'), { name, url: job.playUrl }, report)
+  },
+}, '▶ Riproduci')
+const recordingOrder = { recording: 0, waiting: 1, scheduled: 2, saved: 3, failed: 3 }
+const RECORDINGS_PER_PAGE = 10
 let recordingTimer
 function openRecordings() {
-  const list = h('div', { class: 'results' }, 'Caricamento…')
-  let loading = false
-  const load = async () => {
-    if (loading) return
-    loading = true
-    try {
-      const jobs = await api('recordings')
-      if (!list.isConnected || !sheet.open) return
-      list.replaceChildren(...(jobs.length ? jobs.map(job => h('div', { class: 'res' },
-        h('div', { class: 'rm' },
-          h('div', { class: 'rn' }, job.title),
-          h('div', { class: 'rc' }, `${job.channelName} · ${fmtDay(job.start)} · ${fmt(job.start)}–${fmt(job.end)}`),
-          h('div', { class: 'rc' }, recordingStatus(job))),
-        job.status === 'scheduled' && h('button', { class: 'btn', onclick: async () => {
-          try { await cancelRecording(job); await load() } catch (err) { showStatus(err.message, 4000) }
-        } }, 'Annulla'),
-      )) : [h('div', { class: 'empty' }, 'Nessuna registrazione.')]))
-    } catch (err) {
-      if (list.isConnected) list.textContent = 'Registrazioni non disponibili.'
-    } finally { loading = false }
+  const list = h('div', { class: 'results recording-list' }, 'Caricamento…')
+  const message = h('div', { class: 'meta', role: 'status', hidden: true })
+  const report = text => { message.textContent = text; message.hidden = !text }
+  let jobs
+  let page = 0
+  let pending
+  const search = h('input', {
+    class: 'recording-search', type: 'search', placeholder: 'Cerca titolo o canale',
+    'aria-label': 'Cerca titolo o canale', hidden: true,
+    oninput: () => { page = 0; draw() },
+  })
+  const previous = h('button', { class: 'btn', onclick: () => changePage(-1) }, 'Precedente')
+  const next = h('button', { class: 'btn', onclick: () => changePage(1) }, 'Successiva')
+  const pageLabel = h('span', { class: 'meta', 'aria-live': 'polite' })
+  const pages = h('div', { class: 'recording-pages', hidden: true }, previous, pageLabel, next)
+  function changePage(direction) {
+    page += direction
+    draw()
+    list.scrollTop = 0
   }
-  sheet.replaceChildren(h('div', { class: 'sh' }, h('h2', {}, 'Registrazioni'), list,
-    h('div', { class: 'acts' }, h('button', { class: 'btn', onclick: () => sheet.close() }, 'Chiudi'))))
+  function draw() {
+    const query = search.value.trim().toLowerCase()
+    const matches = jobs.filter(job => `${job.title} ${job.channelName}`.toLowerCase().includes(query))
+    const pageCount = Math.max(1, Math.ceil(matches.length / RECORDINGS_PER_PAGE))
+    page = Math.min(page, pageCount - 1)
+    pages.hidden = pageCount === 1
+    previous.disabled = page === 0
+    next.disabled = page + 1 === pageCount
+    pageLabel.textContent = `${page + 1} / ${pageCount}`
+    search.hidden = jobs.length === 0 && !search.value
+
+    const rows = matches.slice(page * RECORDINGS_PER_PAGE, (page + 1) * RECORDINGS_PER_PAGE)
+    list.replaceChildren(...(rows.length ? rows.map(job => h('div', { class: 'res' },
+      h('div', { class: 'rm' },
+        h('div', { class: 'rn' }, job.title),
+        h('div', { class: 'rc' }, `${job.channelName} · ${fmtDay(job.start)} · ${fmt(job.start)}–${fmt(job.end)}`),
+        h('div', { class: 'rc' }, recordingStatus(job))),
+      recordingPlay(job, report),
+      ['scheduled', 'failed'].includes(job.status) && h('button', { class: 'btn', onclick: async e => {
+        const button = e.currentTarget
+        button.disabled = true
+        try {
+          await cancelRecording(job)
+          report('')
+          await pending
+          await load()
+        } catch (err) { report(err.message) } finally { button.disabled = false }
+      } }, job.status === 'scheduled' ? 'Annulla' : 'Rimuovi'),
+    )) : [h('div', { class: 'empty' }, query ? 'Nessun risultato.' : 'Nessuna registrazione.')]))
+  }
+  let lastResult
+  const load = () => pending ||= api('recordings').then(result => {
+    if (!list.isConnected || !sheet.open) return
+    const snapshot = JSON.stringify(result)
+    if (snapshot === lastResult) return
+    lastResult = snapshot
+    search.disabled = false
+    jobs = result.sort((a, b) => recordingOrder[a.status] - recordingOrder[b.status] ||
+      (a.status === 'scheduled' ? a.start - b.start : b.start - a.start))
+    draw()
+  }).catch(() => {
+    if (list.isConnected && sheet.open) {
+      lastResult = undefined
+      search.disabled = true
+      pages.hidden = true
+      list.textContent = 'Registrazioni non disponibili.'
+    }
+  }).finally(() => { pending = null })
+  sheet.replaceChildren(h('div', { class: 'sh recordings-sheet' }, h('h2', {}, 'Registrazioni'), search, list, pages, message,
+    h('div', { class: 'acts' }, h('button', { class: 'btn', autofocus: true, onclick: () => sheet.close() }, 'Chiudi'))))
   sheet.showModal()
   load()
   clearInterval(recordingTimer)
@@ -338,7 +408,7 @@ async function openDetail(chId, s) {
     h('div', { class: 'meta' }, `${ch?.lcn ? ch.lcn + ' · ' : ''}${ch?.name ?? chId} · ${fmtDay(p.s)} · ${fmt(p.s)}–${fmt(p.e)}${p.cat ? ' · ' + p.cat : ''}`),
     p.desc && h('p', {}, p.desc),
     status,
-    h('div', { class: 'acts' }, live, record, ics, close)))
+    h('div', { class: 'acts' }, live, record, recordingPlay(p.recording, text => { status.textContent = text }), ics, close)))
   sheet.showModal()
 }
 sheet.addEventListener('click', e => { if (e.target === sheet) sheet.close() })
@@ -350,8 +420,7 @@ function downloadIcs(p, ch) {
     `UID:${p.s}-${ch?.id}@guidatv`, `DTSTAMP:${z(Date.now())}`, `DTSTART:${z(p.s)}`, `DTEND:${z(p.e)}`,
     `SUMMARY:${esc(p.t)} (${esc(ch?.name)})`, `DESCRIPTION:${esc(p.desc)}`,
     'BEGIN:VALARM', 'TRIGGER:-PT5M', 'ACTION:DISPLAY', `DESCRIPTION:${esc(p.t)}`, 'END:VALARM', 'END:VEVENT', 'END:VCALENDAR'].join('\r\n')
-  const a = h('a', { href: URL.createObjectURL(new Blob([body], { type: 'text/calendar' })), download: 'programma.ics' })
-  a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000)
+  downloadFile('programma.ics', body, 'text/calendar')
 }
 
 // ---------- regia ----------

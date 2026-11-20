@@ -29,6 +29,7 @@ const recordings = recordingShare && new Recordings({
   archive: new SmbArchive({
     share: recordingShare,
     ip: process.env.RECORDINGS_SMB_IP,
+    tailscaleHost: process.env.RECORDINGS_SMB_TAILSCALE_HOST,
     credentials: process.env.RECORDINGS_SMB_CREDENTIALS || '/run/guidatv/smb.credentials',
   }),
   before: padding(process.env.RECORDINGS_BEFORE_MIN, 2),
@@ -74,9 +75,11 @@ const json = (res, data, status = 200, cache = 'no-cache') => {
 }
 const num = (v, d) => (Number.isFinite(Number(v)) && v !== null && v !== '' ? Number(v) : d)
 
-function recordingApi(q, res, req) {
+async function recordingApi(q, res, req) {
   if (!recordings) return json(res, { error: 'Registrazioni disattivate' }, 404)
-  if (req.method === 'GET' || req.method === 'HEAD') return json(res, recordings.list(), 200, 'no-store')
+  if (req.method === 'GET' || req.method === 'HEAD') {
+    return json(res, await recordings.visible(recordings.list(), req.headers.host, req.socket.remoteAddress), 200, 'no-store')
+  }
   if (req.method !== 'POST' && req.method !== 'DELETE') return json(res, { error: 'Metodo non consentito' }, 405)
   const origin = URL.parse(req.headers.origin || '')
   if (!origin || !['http:', 'https:'].includes(origin.protocol) || origin.host !== req.headers.host ||
@@ -123,7 +126,10 @@ async function api(url, res, req) {
     }
     case '/api/programme': {
       const p = store.programme(q.get('c'), num(q.get('s'), NaN))
-      return p ? json(res, { ...p, recording: recordings ? recordings.get(q.get('c'), p.s) : null }) : json(res, { error: 'non trovato' }, 404)
+      if (!p) return json(res, { error: 'non trovato' }, 404)
+      const job = recordings && recordings.get(q.get('c'), p.s)
+      const [recording = null] = job ? await recordings.visible([job], req.headers.host, req.socket.remoteAddress) : []
+      return json(res, { ...p, recording })
     }
     case '/api/search': return json(res, store.search(q.get('q') || '', num(q.get('from'), Date.now())))
     default: return json(res, { error: 'non trovato' }, 404)
@@ -149,7 +155,7 @@ async function serveStatic(pathname, res) {
 const server = createServer(async (req, res) => {
   try {
     const url = new URL(req.url, 'http://x')
-    if (url.pathname === '/api/recordings') return recordingApi(url.searchParams, res, req)
+    if (url.pathname === '/api/recordings') return await recordingApi(url.searchParams, res, req)
     if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(405); return res.end() }
     if (url.pathname.startsWith('/api/')) {
       const m = /^\/api\/live\/([^/]+)\.ts$/.exec(url.pathname)
