@@ -20,6 +20,8 @@ Su telefono: "Aggiungi a schermata Home" per averla come app.
 priorità Rai > Mediaset > Sky > Superguida). Modifica lo script (EXCLUDE/ALIAS) e rigenera, poi `docker compose restart epg`.
 I canali senza dati non compaiono nell'app.
 
+L'app usa i loghi dei canali presenti in `guide.xml` e, se mancano, gli URL in `server/src/logos.json` (iptv-org, Sky, Tivùsat, SuperGuida TV e RaiPlay).
+
 `epg/superguidatv.it.config.js` sostituisce lo scraper upstream, rotto dopo la riscrittura del sito.
 
 ## Numero di canale (LCN) e visione in diretta

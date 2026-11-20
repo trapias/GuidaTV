@@ -19,6 +19,16 @@ export function parseTime(s) {
 
 const text = v => (v == null ? '' : typeof v === 'object' ? (Array.isArray(v) ? text(v[0]) : (v['#t'] ?? '')) : String(v)).toString().trim()
 
+function channelLogo(icon) {
+  for (const entry of Array.isArray(icon) ? icon : [icon]) {
+    const src = entry?.['@src']
+    if (typeof src !== 'string') continue
+    const url = URL.parse(src)
+    if (url?.protocol === 'https:' || url?.protocol === 'http:') return url.href
+  }
+  return null
+}
+
 // Raggruppamento per i filtri della UI, dedotto dal nome del canale.
 export function groupOf(name) {
   const n = name.toLowerCase()
@@ -40,7 +50,7 @@ export function parseXmltv(xml) {
     const id = c['@id']
     if (!id) continue
     const name = text(c['display-name']) || id
-    channels.set(id, { id, name, group: groupOf(name), programmes: [] })
+    channels.set(id, { id, name, group: groupOf(name), logo: channelLogo(c.icon), programmes: [] })
   }
   for (const p of tv.programme || []) {
     const ch = channels.get(p['@channel'])

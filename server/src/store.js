@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { mkdir, readFile, writeFile, rename } from 'node:fs/promises'
 import { join } from 'node:path'
 import { parseXmltv } from './xmltv.js'
+import channelLogos from './logos.json' with { type: 'json' }
 
 const fold = s => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
 
@@ -56,8 +57,10 @@ export class Store {
   }
 
   listChannels() {
-    return [...this.channels.values()].map(({ id, name, group, programmes }) => ({
-      id, name, group, n: programmes.length, lcn: this.lcn[id] || null, live: this.streams.has(id), web: this.streams.get(id)?.web ? this.streams.get(id).url : null,
+    return [...this.channels.values()].map(({ id, name, group, logo, programmes }) => ({
+      id, name, group,
+      logo: logo ?? (Object.hasOwn(channelLogos, id) ? channelLogos[id] : null),
+      n: programmes.length, lcn: this.lcn[id] || null, live: this.streams.has(id), web: this.streams.get(id)?.web ? this.streams.get(id).url : null,
     }))
   }
 

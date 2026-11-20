@@ -40,7 +40,18 @@ const dayStart = off => { const d = new Date(); d.setHours(0, 0, 0, 0); d.setDat
 const hue = s => { let x = 0; for (const c of s) x = (x * 31 + c.charCodeAt(0)) % 360; return x }
 const initials = n => n.replace(/[^\p{L}\p{N} +!]/gu, '').split(/\s+/).filter(Boolean).slice(0, 3).map(w => w[0]).join('').toUpperCase()
 const lcnBadge = ch => ch.lcn ? h('span', { class: 'lcn', title: 'Numero sul telecomando (digitale terrestre)' }, ch.lcn) : null
-const logo = ch => h('div', { class: 'logo', style: `background:hsl(${hue(ch.name)} 55% 42%)` }, initials(ch.name))
+function logo(ch) {
+  const badge = h('div', { class: 'logo', 'aria-hidden': 'true', style: `background:hsl(${hue(ch.name)} 55% 42%)` }, initials(ch.name))
+  if (!ch.logo) return badge
+  return h('img', {
+    class: 'logo channel-image',
+    alt: '',
+    loading: 'lazy',
+    referrerpolicy: 'no-referrer',
+    onerror: e => e.currentTarget.replaceWith(badge),
+    src: ch.logo,
+  })
+}
 let statusT
 const showStatus = (msg, ms = 0) => {
   statusEl.textContent = msg; statusEl.hidden = !msg

@@ -25,6 +25,7 @@ main{padding:12px 14px calc(24px + env(safe-area-inset-bottom));max-width:1400px
 .card:active{background:var(--panel2)}
 .card .head{display:flex;align-items:center;gap:8px}
 .logo{flex:none;width:30px;height:30px;border-radius:8px;display:grid;place-items:center;font-size:11px;font-weight:800;color:#fff;letter-spacing:-.02em}
+.channel-image{display:block;object-fit:contain;padding:2px;background:#fff}
 .cname{font-weight:600;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .star{border:0;background:none;font-size:20px;line-height:1;padding:4px;color:var(--mute)}
 .star.on{color:#f5b301}
