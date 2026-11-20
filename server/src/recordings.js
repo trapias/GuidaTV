@@ -10,6 +10,7 @@ const MIN_FREE = 1024 ** 3
 const RETRY_MS = 60000
 const ARCHIVE_CACHE_MS = 10000
 const archivedName = row => row.partial ? row.filename.replace(/(\.(?:mp4|ts))$/, ' - parziale$1') : row.filename
+const earlyStopReason = (row, at) => at < row.end ? 'Fermata prima della fine prevista del programma' : null
 const fileSize = async path => {
   try { return (await stat(path)).size } catch (err) { if (err.code === 'ENOENT') return 0; throw err }
 }
@@ -33,7 +34,6 @@ export class Recordings {
     this.log = log
     this.active = new Map()
     this.abort = new AbortController()
-    this.nextUpload = 0
     mkdirSync(directory, { recursive: true })
     this.db = new DatabaseSync(join(directory, 'jobs.sqlite'))
     this.db.exec(`
@@ -47,6 +47,9 @@ export class Recordings {
       UPDATE recordings SET filename = substr(filename, 1, length(filename) - 3) || '.mp4'
       WHERE status IN ('scheduled', 'recording', 'waiting') AND filename LIKE '%.ts';
     `)
+    const columns = this.db.prepare('PRAGMA table_info(recordings)').all().map(column => column.name)
+    if (!columns.includes('stoppedAt')) this.db.exec('ALTER TABLE recordings ADD COLUMN stoppedAt INTEGER')
+    if (!columns.includes('uploadAfter')) this.db.exec('ALTER TABLE recordings ADD COLUMN uploadAfter INTEGER NOT NULL DEFAULT 0')
   }
 
   list() {
@@ -77,14 +80,42 @@ export class Recordings {
     return this.db.prepare('SELECT * FROM recordings WHERE channel = ? AND start = ?').get(channel, start) || null
   }
 
-  add(channel, name, programme) {
+  conflicts(programme, { before, after }, now = Date.now()) {
+    const from = Math.max(now, programme.s - before)
+    const to = programme.e + after
+    if (from >= to) return []
+    const jobs = this.db.prepare(`
+      SELECT id, title, channelName, captureFrom, captureTo FROM recordings
+      WHERE status IN ('scheduled', 'recording') AND stoppedAt IS NULL AND captureFrom < ? AND captureTo > ?
+        AND (status = 'recording' OR end > ?)
+    `).all(to, from, now)
+    const events = jobs.flatMap(job => [
+      { time: Math.max(from, job.captureFrom), start: 1, job },
+      { time: Math.min(to, job.captureTo), start: 0, job },
+    ]).sort((a, b) => a.time - b.time || a.start - b.start)
+    const overlapping = new Set()
+    const conflicts = new Set()
+    for (const { start, job } of events) {
+      if (start) {
+        overlapping.add(job)
+        if (overlapping.size >= this.limit) {
+          for (const overlap of overlapping) conflicts.add(overlap)
+        }
+      } else {
+        overlapping.delete(job)
+      }
+    }
+    return [...conflicts].sort((a, b) => a.captureFrom - b.captureFrom)
+  }
+
+  add(channel, name, programme, { before = this.before, after = this.after } = {}) {
     const id = randomUUID()
     this.db.prepare(`
       INSERT INTO recordings (id, channel, channelName, title, start, end, captureFrom, captureTo, filename, status)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'scheduled')
       ON CONFLICT(channel, start) DO NOTHING
-    `).run(id, channel, name, programme.t, programme.s, programme.e, programme.s - this.before,
-      programme.e + this.after, archiveName(programme.t, name, programme.s, id))
+    `).run(id, channel, name, programme.t, programme.s, programme.e, programme.s - before,
+      programme.e + after, archiveName(programme.t, name, programme.s, id))
     return this.get(channel, programme.s)
   }
 
@@ -92,8 +123,19 @@ export class Recordings {
     return this.db.prepare("DELETE FROM recordings WHERE id = ? AND status IN ('scheduled', 'failed')").run(id).changes > 0
   }
 
+  finish(id) {
+    const row = this.db.prepare('SELECT stoppedAt FROM recordings WHERE id = ?').get(id)
+    if (row?.stoppedAt != null) return true
+    const at = Date.now()
+    if (!this.active.get(id)?.stop(null, at)) return false
+    this.db.prepare('UPDATE recordings SET stoppedAt = ? WHERE id = ?').run(at, id)
+    return true
+  }
+
   update(id, status, error = null, partial = 0) {
-    this.db.prepare('UPDATE recordings SET status = ?, error = ?, partial = ? WHERE id = ?').run(status, error, partial, id)
+    const uploadAfter = status === 'waiting' ? Date.now() : 0
+    this.db.prepare('UPDATE recordings SET status = ?, error = ?, partial = ?, uploadAfter = ? WHERE id = ?')
+      .run(status, error, partial, uploadAfter, id)
   }
 
   localName(id) { return `${id}.ts` }
@@ -106,7 +148,10 @@ export class Recordings {
         await this.clean(join(this.directory, `${row.id}.mp4`))
       }
       if (row.status !== 'recording') continue
-      if (await fileSize(path)) this.update(row.id, 'waiting', 'Registrazione interrotta dal riavvio', 1)
+      if (await fileSize(path)) {
+        const reason = row.stoppedAt == null ? 'Registrazione interrotta dal riavvio' : row.error || earlyStopReason(row, row.stoppedAt)
+        this.update(row.id, 'waiting', reason, reason ? 1 : 0)
+      } else if (row.stoppedAt != null) this.update(row.id, 'failed', 'Nessun video ricevuto')
       else this.update(row.id, 'scheduled')
     }
     this.timer = setInterval(() => this.tick(), 2000)
@@ -138,25 +183,33 @@ export class Recordings {
       if (!diskFull && stream && !stream.web && this.active.size < this.limit) this.capture(row, stream)
     }
 
-    if (this.upload || now < this.nextUpload) return
-    const row = this.db.prepare("SELECT * FROM recordings WHERE status = 'waiting' ORDER BY start LIMIT 1").get()
+    if (this.upload) return
+    const row = this.db.prepare(`
+      SELECT * FROM recordings WHERE status = 'waiting' AND uploadAfter <= ?
+      ORDER BY uploadAfter, start LIMIT 1
+    `).get(now)
     if (row) {
-      this.upload = this.publish(row).catch(err => this.log.error('Trasferimento registrazione:', err.message))
+      this.upload = this.publish(row).catch(err => {
+        this.log.error('Trasferimento registrazione:', err.message)
+        this.retryUpload(row, 'Trasferimento non riuscito, nuovo tentativo in attesa')
+      })
         .finally(() => { this.upload = null })
     }
   }
 
   capture(row, stream) {
     const path = join(this.directory, this.localName(row.id))
-    this.update(row.id, 'recording')
-    const ff = spawn('ffmpeg', [...streamInputArgs(stream), '-y', path], { stdio: 'ignore' })
     let reason = Date.now() > row.start + 5000 ? 'Registrazione avviata dopo l’inizio' : null
+    this.update(row.id, 'recording', reason)
+    const ff = spawn('ffmpeg', [...streamInputArgs(stream), '-y', path], { stdio: 'ignore' })
+    let stoppedAt
     let killTimer
-    const stop = error => {
+    const stop = (error, at) => {
+      if (killTimer || ff.exitCode !== null || ff.signalCode !== null || !ff.kill('SIGINT')) return false
       if (error) reason = error
-      if (killTimer) return
-      ff.kill('SIGINT')
+      stoppedAt = at
       killTimer = setTimeout(() => ff.kill('SIGKILL'), 5000)
+      return true
     }
     const timer = setTimeout(() => stop(), Math.max(0, row.captureTo - Date.now()))
     ff.on('error', () => { reason = 'Impossibile avviare FFmpeg' })
@@ -167,7 +220,10 @@ export class Recordings {
         this.update(row.id, 'failed', reason || 'Nessun video ricevuto')
         await this.clean(path)
       } else {
-        if (Date.now() < row.captureTo - 5000 || (code !== 0 && code !== 255)) reason ||= 'Lo stream si è interrotto'
+        if (stoppedAt != null) reason ||= earlyStopReason(row, stoppedAt)
+        if ((stoppedAt == null && Date.now() < row.captureTo - 5000) || (code !== 0 && code !== 255)) {
+          reason ||= 'Lo stream si è interrotto'
+        }
         this.update(row.id, 'waiting', reason, reason ? 1 : 0)
       }
     }).catch(err => this.log.error('Chiusura registrazione:', err.message))
@@ -202,7 +258,7 @@ export class Recordings {
     try {
       await this.archive.publish(this.directory, localName, filename, this.abort.signal)
     } catch {
-      return this.retryUpload(row, 'NAS non disponibile, nuovo tentativo in attesa')
+      return this.retryUpload(row, 'Trasferimento al NAS non riuscito, nuovo tentativo in attesa')
     }
     // Attendi l'eventuale verifica iniziata prima del trasferimento e invalida il suo risultato.
     const check = this.archiveCheck
@@ -215,8 +271,9 @@ export class Recordings {
   }
 
   retryUpload(row, message) {
-    this.nextUpload = Date.now() + RETRY_MS
-    this.update(row.id, 'waiting', row.partial && row.error ? row.error : message, row.partial)
+    if (this.abort.signal.aborted) return
+    this.db.prepare("UPDATE recordings SET uploadAfter = ?, error = ? WHERE id = ? AND status = 'waiting'")
+      .run(Date.now() + RETRY_MS, row.partial && row.error ? row.error : message, row.id)
   }
 
   async clean(path) {

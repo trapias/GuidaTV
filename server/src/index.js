@@ -19,6 +19,7 @@ const PUBLIC_DIR = process.env.PUBLIC_DIR || fileURLToPath(new URL('../public', 
 const STREAMS_SOURCE = process.env.STREAMS_M3U || '' // URL o file; default /data/streams.m3u
 const store = new Store({ epgUrl: EPG_URL, dataDir: DATA_DIR, lcn: await loadLcn(DATA_DIR) })
 const recordingShare = process.env.RECORDINGS_SMB
+const validPadding = value => /^\d+$/.test(value ?? '') && Number(value) <= 60
 const padding = (value, fallback) => {
   const minutes = Number(value ?? fallback)
   return (Number.isInteger(minutes) && minutes >= 0 && minutes <= 60 ? minutes : fallback) * 60000
@@ -89,6 +90,10 @@ async function recordingApi(q, res, req) {
   if (req.method === 'DELETE') {
     return recordings.remove(q.get('id') || '') ? json(res, { ok: true }) : json(res, { error: 'Registrazione non annullabile' }, 409)
   }
+  if (q.get('action') === 'stop') {
+    return recordings.finish(q.get('id') || '') ? json(res, { ok: true }, 202) :
+      json(res, { error: 'La registrazione non è in corso' }, 409)
+  }
   const id = q.get('c')
   const start = num(q.get('s'), NaN)
   const channel = store.channels.get(id)
@@ -97,7 +102,22 @@ async function recordingApi(q, res, req) {
   const stream = store.streams.get(id)
   if (!stream || stream.web) return json(res, { error: 'Il canale non ha uno stream registrabile' }, 409)
   if (programme.e <= Date.now()) return json(res, { error: 'Il programma è già terminato' }, 409)
-  return json(res, recordings.add(id, channel.name, programme), 201, 'no-store')
+  const before = q.get('before')
+  const after = q.get('after')
+  if ([before, after].some(value => value !== null && !validPadding(value))) {
+    return json(res, { error: 'I margini devono essere minuti interi da 0 a 60' }, 400)
+  }
+  const existing = recordings.get(id, start)
+  if (existing) return json(res, existing, 201, 'no-store')
+  const margins = {
+    before: before === null ? recordings.before : Number(before) * 60000,
+    after: after === null ? recordings.after : Number(after) * 60000,
+  }
+  const conflicts = recordings.conflicts(programme, margins)
+  if (conflicts.length && q.get('confirm') !== conflicts.map(job => job.id).sort().join(',')) {
+    return json(res, { error: 'Le registrazioni si sovrappongono', conflicts, limit: recordings.limit }, 409, 'no-store')
+  }
+  return json(res, recordings.add(id, channel.name, programme, margins), 201, 'no-store')
 }
 
 async function api(url, res, req) {
@@ -129,7 +149,8 @@ async function api(url, res, req) {
       if (!p) return json(res, { error: 'non trovato' }, 404)
       const job = recordings && recordings.get(q.get('c'), p.s)
       const [recording = null] = job ? await recordings.visible([job], req.headers.host, req.socket.remoteAddress) : []
-      return json(res, { ...p, recording })
+      const recordingMargins = recordings ? { before: recordings.before / 60000, after: recordings.after / 60000 } : undefined
+      return json(res, { ...p, recording, recordingMargins })
     }
     case '/api/search': return json(res, store.search(q.get('q') || '', num(q.get('from'), Date.now())))
     default: return json(res, { error: 'non trovato' }, 404)

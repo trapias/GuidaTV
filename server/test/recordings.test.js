@@ -107,3 +107,108 @@ test('l’elenco verifica il NAS, riconosce i file parziali e usa l’host adatt
     await rm(directory, { recursive: true, force: true })
   }
 })
+
+test('i margini personalizzati contano solo quando le catture si sovrappongono davvero', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'guidatv-overlap-'))
+  const queue = new Recordings({ directory, before: 0, after: 0 })
+  const start = Date.now() + 60000
+  const minute = 60000
+  const programme = (t, from, to) => ({ t, s: start + from * minute, e: start + to * minute })
+  try {
+    const first = queue.add('iris', 'Iris', programme('Primo', 0, 10), { before: minute, after: 2 * minute })
+    const second = queue.add('rai4', 'Rai 4', programme('Secondo', 12, 20))
+    assert.equal(first.captureFrom, start - minute)
+    assert.equal(first.captureTo, start + 12 * minute)
+    const third = programme('Terzo', 11, 13)
+    assert.deepEqual(queue.conflicts(third, { before: 0, after: 0 }), [])
+
+    queue.remove(second.id)
+    const overlapping = queue.add('rai4', 'Rai 4', programme('Secondo', 12, 20), { before: minute })
+    const conflicts = queue.conflicts(third, { before: 0, after: 0 })
+    assert.deepEqual(conflicts.map(job => job.id), [first.id, overlapping.id])
+    assert.deepEqual(queue.conflicts(third, { before: 0, after: 0 }, start + 12 * minute), [])
+    queue.update(first.id, 'waiting')
+    assert.deepEqual(queue.conflicts(third, { before: 0, after: 0 }), [])
+  } finally {
+    await queue.stop()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('un trasferimento fallito conserva il proprio ritentativo e lascia passare il successivo', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'guidatv-retry-'))
+  const attempted = []
+  let first
+  let offline = true
+  const archive = {
+    async publish(_, localName) {
+      attempted.push(localName)
+      if (localName === `${first.id}.mp4` && offline) throw new Error('File inaccessibile')
+    },
+  }
+  const options = { directory, store: { streams: new Map() }, archive, before: 0, after: 0 }
+  let queue = new Recordings(options)
+  try {
+    const start = Date.now()
+    first = queue.add('iris', 'Iris', { t: 'Primo', s: start, e: start + 60000 })
+    const next = queue.add('rai4', 'Rai 4', { t: 'Secondo', s: start + 60000, e: start + 120000 })
+    for (const job of [first, next]) {
+      await writeFile(join(directory, `${job.id}.mp4`), 'campione MP4')
+      queue.update(job.id, 'waiting')
+    }
+    await queue.processQueue()
+    await queue.upload
+    const beforeRetry = queue.get(first.channel, first.start)
+    assert.equal(beforeRetry.status, 'waiting')
+    assert.ok(beforeRetry.uploadAfter > Date.now())
+    await queue.stop()
+
+    queue = new Recordings(options)
+    await queue.processQueue()
+    await queue.upload
+    assert.equal(queue.get(first.channel, first.start).uploadAfter, beforeRetry.uploadAfter)
+    assert.equal(queue.get(next.channel, next.start).status, 'saved')
+    assert.deepEqual(attempted, [`${first.id}.mp4`, `${next.id}.mp4`])
+    assert.equal(await readFile(join(directory, `${first.id}.mp4`), 'utf8'), 'campione MP4')
+
+    offline = false
+    queue.db.prepare('UPDATE recordings SET uploadAfter = 0 WHERE id = ?').run(first.id)
+    await queue.processQueue()
+    await queue.upload
+    assert.equal(queue.get(first.channel, first.start).status, 'saved')
+  } finally {
+    await queue.stop()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('dopo un riavvio uno stop richiesto recupera il video o rimane fermo se è vuoto', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'guidatv-stop-'))
+  const options = { directory, store: { streams: new Map() }, archive: {}, before: 0, after: 60000 }
+  let queue = new Recordings(options)
+  try {
+    const now = Date.now()
+    const jobs = [now + 10000, now - 10000, now + 20000].map((end, i) =>
+      queue.add(`canale${i}`, `Canale ${i}`, { t: 'Programma', s: now - 30000, e: end }))
+    for (const job of jobs) {
+      queue.update(job.id, 'recording')
+      queue.db.prepare('UPDATE recordings SET stoppedAt = ? WHERE id = ?').run(now, job.id)
+    }
+    for (const job of jobs.slice(0, 2)) await writeFile(join(directory, queue.localName(job.id)), 'campione')
+    await queue.stop()
+
+    queue = new Recordings(options)
+    queue.tick = () => {}
+    await queue.start()
+    const [early, afterEnd, empty] = jobs.map(job => queue.get(job.channel, job.start))
+    assert.equal(early.status, 'waiting')
+    assert.equal(early.partial, 1)
+    assert.equal(afterEnd.status, 'waiting')
+    assert.equal(afterEnd.partial, 0)
+    assert.equal(empty.status, 'failed')
+    assert.ok(jobs.every(job => queue.finish(job.id)))
+  } finally {
+    await queue.stop()
+    await rm(directory, { recursive: true, force: true })
+  }
+})

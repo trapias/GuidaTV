@@ -40,11 +40,13 @@ In **Cinema**, **Serie TV** e **News** la guida mostra i programmi corrispondent
 
 ## Registrazioni
 
-Dalla scheda di un programma su un canale con stream diretto, **Registra** pianifica la cattura sul server. In **Registrazioni** si vedono gli stati e si possono annullare le prenotazioni future.
+Dalla scheda di un programma su un canale con stream diretto, **Registra** apre la prenotazione con i margini personalizzabili. Se negli orari scelti, margini inclusi, si superano le due registrazioni simultanee, GuidaTV mostra quali prenotazioni si sovrappongono e chiede una conferma. Se confermi, la registrazione che rimane in attesa parte appena si libera un posto, a condizione che il programma sia ancora in onda.
+
+In **Registrazioni** puoi vedere l'orario di cattura previsto, annullare le prenotazioni future e usare **Ferma e salva** sulle registrazioni in corso per trasferire al NAS quanto già acquisito. Se fermi una cattura prima dell'orario di fine del programma indicato in guida, la registrazione è contrassegnata come parziale.
 
 Il margine predefinito è di 2 minuti prima e 10 dopo. Per modificarlo, imposta `RECORDINGS_BEFORE_MIN` e `RECORDINGS_AFTER_MIN` nel file `.env` accanto a `docker-compose.yml` e applica la configurazione con `docker compose up -d --no-deps web`. I valori sono minuti interi da 0 a 60. GuidaTV fissa i margini al momento della prenotazione. Per aggiornare una prenotazione futura già in coda, annullala e ricreala.
 
-Il servizio cattura in MPEG-TS in `/data/recordings`. A registrazione conclusa, racchiude audio e video in un file MP4 senza ricodificarli e trasferisce il file via SMB a `//nas.local/TV`. Se il NAS è irraggiungibile, i file restano in locale e il trasferimento viene ritentato.
+Il servizio cattura in MPEG-TS in `/data/recordings`. A registrazione conclusa, racchiude audio e video in un file MP4 senza ricodificarli e trasferisce il file via SMB a `//nas.local/TV`. Dopo un trasferimento fallito, il file resta in locale e il servizio riprova dopo un minuto. Nel frattempo può trasferire le altre registrazioni in coda.
 
 Le registrazioni salvate restano visibili finché il file è nella condivisione. GuidaTV verifica il NAS mentre la finestra è aperta. Una cancellazione o uno spostamento si riflette alla verifica successiva. La finestra mostra prima le registrazioni in corso, in attesa o programmate e permette di cercare per titolo o canale, con 10 risultati per pagina. Le registrazioni fallite restano visibili finché vengono rimosse dalla finestra.
 
