@@ -4,7 +4,8 @@ import { mkdirSync } from 'node:fs'
 import { rename, stat, statfs, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { remuxMp4, streamInputArgs } from './ffmpeg.js'
+import { mediaDuration, remuxMp4, streamInputArgs } from './ffmpeg.js'
+import { guideChange, titleKey } from './recording-guide.js'
 
 const MIN_FREE = 1024 ** 3
 const RETRY_MS = 60000
@@ -46,10 +47,25 @@ export class Recordings {
       );
       UPDATE recordings SET filename = substr(filename, 1, length(filename) - 3) || '.mp4'
       WHERE status IN ('scheduled', 'recording', 'waiting') AND filename LIKE '%.ts';
+      CREATE TABLE IF NOT EXISTS series_rules (
+        id TEXT PRIMARY KEY, channel TEXT NOT NULL, channelName TEXT NOT NULL,
+        title TEXT NOT NULL, titleKey TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
+        UNIQUE(channel, titleKey)
+      );
+      CREATE TABLE IF NOT EXISTS series_skips (
+        ruleId TEXT NOT NULL, start INTEGER NOT NULL, episode TEXT,
+        PRIMARY KEY(ruleId, start)
+      );
     `)
     const columns = this.db.prepare('PRAGMA table_info(recordings)').all().map(column => column.name)
-    if (!columns.includes('stoppedAt')) this.db.exec('ALTER TABLE recordings ADD COLUMN stoppedAt INTEGER')
-    if (!columns.includes('uploadAfter')) this.db.exec('ALTER TABLE recordings ADD COLUMN uploadAfter INTEGER NOT NULL DEFAULT 0')
+    const additions = {
+      stoppedAt: 'INTEGER', uploadAfter: 'INTEGER NOT NULL DEFAULT 0',
+      kind: "TEXT NOT NULL DEFAULT 'guide'", subtitle: 'TEXT', episode: 'TEXT', seriesId: 'TEXT',
+      durationMs: 'INTEGER', bytes: 'INTEGER', outcomeAt: 'INTEGER',
+    }
+    for (const [name, type] of Object.entries(additions)) {
+      if (!columns.includes(name)) this.db.exec(`ALTER TABLE recordings ADD COLUMN ${name} ${type}`)
+    }
   }
 
   list() {
@@ -84,6 +100,57 @@ export class Recordings {
     return this.db.prepare('SELECT * FROM recordings WHERE id = ?').get(id) || null
   }
 
+  change(row, now = Date.now()) {
+    return guideChange(row, this.store?.channels?.get(row.channel)?.programmes, now)
+  }
+
+  listSeries() {
+    return this.db.prepare('SELECT * FROM series_rules WHERE enabled = 1 ORDER BY title COLLATE NOCASE').all()
+  }
+
+  seriesFor(channel, title) {
+    return this.db.prepare('SELECT * FROM series_rules WHERE channel = ? AND titleKey = ?').get(channel, titleKey(title))
+  }
+
+  follow(channel, channelName, title) {
+    return this.db.prepare(`
+      INSERT INTO series_rules (id, channel, channelName, title, titleKey) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT (channel, titleKey) DO UPDATE SET enabled = 1 RETURNING *
+    `).get(randomUUID(), channel, channelName, title, titleKey(title))
+  }
+
+  unfollow(id) {
+    return this.db.prepare('UPDATE series_rules SET enabled = 0 WHERE id = ? AND enabled = 1').run(id).changes > 0
+  }
+
+  syncSeries(now = Date.now()) {
+    for (const rule of this.listSeries()) {
+      const channel = this.store.channels?.get(rule.channel)
+      const stream = this.store.streams.get(rule.channel)
+      if (!channel || !stream || stream.web) continue
+      const jobs = this.db.prepare("SELECT * FROM recordings WHERE channel = ? AND kind = 'guide'").all(rule.channel)
+        .filter(job => titleKey(job.title) === rule.titleKey)
+      const skips = this.db.prepare('SELECT start, episode FROM series_skips WHERE ruleId = ?').all(rule.id)
+      const occupied = new Set([...jobs, ...skips].map(row => row.start))
+      const episodes = new Set([...jobs.filter(job => job.status !== 'failed'), ...skips].map(row => row.episode).filter(Boolean))
+      for (const job of jobs) {
+        const change = this.change(job, now)
+        if (change) occupied.add(change.s)
+      }
+      for (const p of channel.programmes) {
+        if (p.s < now || titleKey(p.t) !== rule.titleKey || occupied.has(p.s) || (p.episode && episodes.has(p.episode))) continue
+        const created = this.add(rule.channel, channel.name, p, { seriesId: rule.id })
+        if (created.seriesId === rule.id && p.episode) episodes.add(p.episode)
+      }
+    }
+  }
+
+  outcomes(now = Date.now()) {
+    return this.db.prepare(`
+      SELECT id, outcomeAt FROM recordings WHERE outcomeAt >= ? ORDER BY outcomeAt DESC, id LIMIT 100
+    `).all(now - 30 * 86400000)
+  }
+
   conflicts(programme, { before, after }, { now = Date.now(), excludeId = '' } = {}) {
     const from = Math.max(now, programme.s - before)
     const to = programme.e + after
@@ -112,14 +179,15 @@ export class Recordings {
     return [...conflicts].sort((a, b) => a.captureFrom - b.captureFrom)
   }
 
-  add(channel, name, programme, { before = this.before, after = this.after } = {}) {
+  add(channel, name, programme, { before = this.before, after = this.after, kind = 'guide', seriesId = null } = {}) {
     const id = randomUUID()
     this.db.prepare(`
-      INSERT INTO recordings (id, channel, channelName, title, start, end, captureFrom, captureTo, filename, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'scheduled')
+      INSERT INTO recordings (id, channel, channelName, title, start, end, captureFrom, captureTo, filename, status,
+        kind, subtitle, episode, seriesId)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'scheduled', ?, ?, ?, ?)
       ON CONFLICT(channel, start) DO NOTHING
     `).run(id, channel, name, programme.t, programme.s, programme.e, programme.s - before,
-      programme.e + after, archiveName(programme.t, name, programme.s, id))
+      programme.e + after, archiveName(programme.t, name, programme.s, id), kind, programme.sub || null, programme.episode || null, seriesId)
     return this.get(channel, programme.s)
   }
 
@@ -131,8 +199,35 @@ export class Recordings {
     `).get(before, after, id, now) || null
   }
 
+  move(row, programme, { before, after }, now) {
+    return this.db.prepare(`
+      UPDATE recordings SET start = ?, end = ?, title = ?, captureFrom = ?, captureTo = ?, filename = ?
+      WHERE id = ? AND status = 'scheduled' AND end > ? AND NOT EXISTS (
+        SELECT 1 FROM recordings r WHERE r.channel = recordings.channel AND r.start = ? AND r.id <> recordings.id
+      ) RETURNING *
+    `).get(programme.s, programme.e, programme.t, programme.s - before, programme.e + after,
+      archiveName(programme.t, row.channelName, programme.s, row.id), row.id, now, programme.s) || null
+  }
+
   remove(id) {
-    return this.db.prepare("DELETE FROM recordings WHERE id = ? AND status IN ('scheduled', 'failed')").run(id).changes > 0
+    const row = this.getById(id)
+    if (!row || !['scheduled', 'failed'].includes(row.status)) return false
+    const rule = row.kind === 'guide' && this.seriesFor(row.channel, row.title)
+    this.db.exec('BEGIN')
+    try {
+      if (rule && row.status === 'scheduled') {
+        const skip = this.db.prepare('INSERT OR IGNORE INTO series_skips VALUES (?, ?, ?)')
+        skip.run(rule.id, row.start, row.episode)
+        const change = this.change(row)
+        if (change) skip.run(rule.id, change.s, row.episode)
+      }
+      this.db.prepare('DELETE FROM recordings WHERE id = ?').run(id)
+      this.db.exec('COMMIT')
+      return true
+    } catch (err) {
+      this.db.exec('ROLLBACK')
+      throw err
+    }
   }
 
   finish(id) {
@@ -146,8 +241,15 @@ export class Recordings {
 
   update(id, status, error = null, partial = 0) {
     const uploadAfter = status === 'waiting' ? Date.now() : 0
-    this.db.prepare('UPDATE recordings SET status = ?, error = ?, partial = ?, uploadAfter = ? WHERE id = ?')
-      .run(status, error, partial, uploadAfter, id)
+    const outcomeAt = status === 'saved' || status === 'failed' ? Date.now() : null
+    this.db.prepare('UPDATE recordings SET status = ?, error = ?, partial = ?, uploadAfter = ?, outcomeAt = ? WHERE id = ?')
+      .run(status, error, partial, uploadAfter, outcomeAt, id)
+  }
+
+  async measure(id, path, bytes) {
+    const durationMs = await mediaDuration(path)
+    this.db.prepare('UPDATE recordings SET bytes = ?, durationMs = COALESCE(?, durationMs) WHERE id = ?')
+      .run(bytes, durationMs, id)
   }
 
   localName(id) { return `${id}.ts` }
@@ -160,7 +262,9 @@ export class Recordings {
         await this.clean(join(this.directory, `${row.id}.mp4`))
       }
       if (row.status !== 'recording') continue
-      if (await fileSize(path)) {
+      const bytes = await fileSize(path)
+      if (bytes) {
+        await this.measure(row.id, path, bytes)
         const reason = row.stoppedAt == null ? 'Registrazione interrotta dal riavvio' : row.error || earlyStopReason(row, row.stoppedAt)
         this.update(row.id, 'waiting', reason, reason ? 1 : 0)
       } else if (row.stoppedAt != null) this.update(row.id, 'failed', 'Nessun video ricevuto')
@@ -228,7 +332,8 @@ export class Recordings {
     const done = new Promise(resolve => ff.once('close', resolve)).then(async code => {
       clearTimeout(timer)
       clearTimeout(killTimer)
-      if (!await fileSize(path)) {
+      const bytes = await fileSize(path)
+      if (!bytes) {
         this.update(row.id, 'failed', reason || 'Nessun video ricevuto')
         await this.clean(path)
       } else {
@@ -236,6 +341,7 @@ export class Recordings {
         if ((stoppedAt == null && Date.now() < row.captureTo - 5000) || (code !== 0 && code !== 255)) {
           reason ||= 'Lo stream si è interrotto'
         }
+        await this.measure(row.id, path, bytes)
         this.update(row.id, 'waiting', reason, reason ? 1 : 0)
       }
     }).catch(err => this.log.error('Chiusura registrazione:', err.message))
@@ -265,6 +371,8 @@ export class Recordings {
         return this.retryUpload(row, 'Preparazione MP4 non riuscita, copia locale conservata')
       }
     }
+    const mp4Bytes = await fileSize(mp4)
+    if (row.bytes !== mp4Bytes || row.durationMs == null) await this.measure(row.id, mp4, mp4Bytes)
 
     const filename = archivedName(row)
     try {

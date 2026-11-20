@@ -17,3 +17,12 @@ export function remuxMp4(input, output, signal) {
     '-map', '0:v:0', '-map', '0:a:0', '-c', 'copy', '-movflags', '+faststart', '-f', 'mp4', output,
   ], { signal })
 }
+
+export async function mediaDuration(path) {
+  try {
+    const { stdout } = await exec('ffprobe', ['-v', 'error', '-show_entries', 'format=duration',
+      '-of', 'default=noprint_wrappers=1:nokey=1', path], { timeout: 5000 })
+    const seconds = Number(stdout.trim())
+    return Number.isFinite(seconds) && seconds > 0 ? Math.round(seconds * 1000) : null
+  } catch { return null }
+}

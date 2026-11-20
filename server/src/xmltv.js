@@ -20,6 +20,22 @@ export function parseTime(s) {
 
 const text = v => (v == null ? '' : typeof v === 'object' ? (Array.isArray(v) ? text(v[0]) : (v['#t'] ?? '')) : String(v)).toString().trim()
 
+function episodeNumber(values) {
+  for (const entry of Array.isArray(values) ? values : [values]) {
+    if (entry?.['@system'] !== 'xmltv_ns') continue
+    const [season, episode, part] = text(entry).split('.').map(field => field.split('/')[0].trim())
+    if (/^\d+$/.test(season ?? '') && /^\d+$/.test(episode ?? '')) {
+      return [Number(season) + 1, Number(episode) + 1, part && Number(part) + 1].filter(Boolean).join('.')
+    }
+  }
+  for (const entry of Array.isArray(values) ? values : [values]) {
+    if (entry?.['@system'] !== 'onscreen') continue
+    const match = /^(?:S(\d+)\s*E(\d+)|(\d+)\s*x\s*(\d+))$/i.exec(text(entry))
+    if (match) return [Number(match[1] ?? match[3]), Number(match[2] ?? match[4])].join('.')
+  }
+  return null
+}
+
 function channelLogo(icon) {
   for (const entry of Array.isArray(icon) ? icon : [icon]) {
     const src = entry?.['@src']
@@ -64,6 +80,7 @@ export function parseXmltv(xml) {
     ch.programmes.push({
       s, e, t,
       sub: text(p['sub-title']),
+      episode: episodeNumber(p['episode-num']),
       cat: categories[0] || '',
       type: programmeType(ch.id, t, categories),
       desc: text(p.desc),

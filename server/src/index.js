@@ -35,6 +35,7 @@ const recordings = recordingShare && new Recordings({
   }),
   before: padding(process.env.RECORDINGS_BEFORE_MIN, 2),
   after: padding(process.env.RECORDINGS_AFTER_MIN, 10),
+  limit: /^[1-8]$/.test(process.env.RECORDINGS_MAX_CONCURRENT) ? Number(process.env.RECORDINGS_MAX_CONCURRENT) : 2,
 })
 
 // Stream con audio/video su tracce HLS separate (Mediaset): VLC li desincronizza, quindi li uniamo
@@ -79,7 +80,10 @@ const num = (v, d) => (Number.isFinite(Number(v)) && v !== null && v !== '' ? Nu
 async function recordingApi(q, res, req) {
   if (!recordings) return json(res, { error: 'Registrazioni disattivate' }, 404)
   if (req.method === 'GET' || req.method === 'HEAD') {
-    return json(res, await recordings.visible(recordings.list(), req.headers.host, req.socket.remoteAddress), 200, 'no-store')
+    if (q.get('view') === 'series') return json(res, recordings.listSeries(), 200, 'no-store')
+    if (q.get('view') === 'outcomes') return json(res, recordings.outcomes(), 200, 'no-store')
+    const rows = await recordings.visible(recordings.list(), req.headers.host, req.socket.remoteAddress)
+    return json(res, rows.map(row => row.status === 'scheduled' ? { ...row, guideChange: recordings.change(row) } : row), 200, 'no-store')
   }
   if (!['POST', 'PATCH', 'DELETE'].includes(req.method)) return json(res, { error: 'Metodo non consentito' }, 405)
   const origin = URL.parse(req.headers.origin || '')
@@ -88,6 +92,9 @@ async function recordingApi(q, res, req) {
     return json(res, { error: 'Richiesta da un’altra origine' }, 403)
   }
   if (req.method === 'DELETE') {
+    if (q.get('action') === 'series') {
+      return recordings.unfollow(q.get('id') || '') ? json(res, { ok: true }) : json(res, { error: 'Serie non seguita' }, 404)
+    }
     return recordings.remove(q.get('id') || '') ? json(res, { ok: true }) : json(res, { error: 'Registrazione non annullabile' }, 409)
   }
   if (req.method === 'POST' && q.get('action') === 'stop') {
@@ -102,26 +109,61 @@ async function recordingApi(q, res, req) {
   }
   const id = scheduled?.channel ?? q.get('c')
   const start = scheduled?.start ?? num(q.get('s'), NaN)
-  const programme = scheduled ? { s: scheduled.start, e: scheduled.end } : store.programme(id, start)
+  const manual = q.get('action') === 'manual'
+  const followSeries = req.method === 'POST' && q.get('action') === 'series'
+  if (scheduled && manual !== (scheduled.kind === 'manual')) {
+    return json(res, { error: 'Tipo di registrazione non valido' }, 400)
+  }
+  const now = Date.now()
+  let programme
+  let moving = false
+  if (manual) {
+    const s = num(q.get('s'), NaN)
+    const e = num(q.get('e'), NaN)
+    const t = q.get('title')?.trim() || 'Registrazione manuale'
+    if (!Number.isSafeInteger(s) || !Number.isSafeInteger(e) || s < now - 60000 || s > now + 365 * 86400000 ||
+      e <= now || e <= s || e - s > 86400000 || t.length > 120) {
+      return json(res, { error: 'Scegli un intervallo da adesso al prossimo anno, con durata massima di 24 ore' }, 400)
+    }
+    programme = { s, e, t }
+    moving = editing
+  } else if (scheduled) {
+    programme = { s: scheduled.start, e: scheduled.end, t: scheduled.title }
+    if (q.has('guideStart') || q.has('guideEnd')) {
+      const candidate = recordings.change(scheduled, now)
+      if (!candidate || candidate.s !== num(q.get('guideStart'), NaN) || candidate.e !== num(q.get('guideEnd'), NaN)) {
+        return json(res, { error: 'La proposta del palinsesto è cambiata. Riapri Registrazioni per aggiornarla' }, 409)
+      }
+      programme = { ...programme, ...candidate }
+      moving = true
+    }
+  } else {
+    programme = store.programme(id, start)
+  }
   if (!programme) return json(res, { error: 'Programma non trovato' }, 404)
   if (!scheduled) {
     const stream = store.streams.get(id)
     if (!stream || stream.web) return json(res, { error: 'Il canale non ha uno stream registrabile' }, 409)
   }
-  const now = Date.now()
+  if (followSeries) {
+    const rule = recordings.follow(id, store.channels.get(id).name, programme.t)
+    recordings.syncSeries(now)
+    return json(res, rule, 201, 'no-store')
+  }
   if (programme.e <= now) return json(res, { error: 'Il programma è già terminato' }, 409)
   const before = q.get('before')
   const after = q.get('after')
   if ([before, after].some(value => value !== null && !validPadding(value))) {
     return json(res, { error: 'I margini devono essere minuti interi da 0 a 60' }, 400)
   }
-  const existing = !editing && recordings.get(id, start)
-  if (existing) return json(res, existing, 201, 'no-store')
+  const existing = !editing && recordings.get(id, programme.s)
+  if (existing) return manual ? json(res, { error: 'Esiste già una prenotazione per questo canale e orario' }, 409) :
+    json(res, existing, 201, 'no-store')
   const defaults = scheduled ? {
     before: scheduled.start - scheduled.captureFrom,
     after: scheduled.captureTo - scheduled.end,
   } : recordings
-  const margins = {
+  const margins = manual ? { before: 0, after: 0 } : {
     before: before === null ? defaults.before : Number(before) * 60000,
     after: after === null ? defaults.after : Number(after) * 60000,
   }
@@ -130,10 +172,10 @@ async function recordingApi(q, res, req) {
     return json(res, { error: 'Le registrazioni si sovrappongono', conflicts, limit: recordings.limit }, 409, 'no-store')
   }
   if (scheduled) {
-    const updated = recordings.reschedule(scheduled.id, margins, now)
-    return updated ? json(res, updated, 200, 'no-store') : json(res, { error: 'Registrazione non modificabile' }, 409)
+    const updated = moving ? recordings.move(scheduled, programme, margins, now) : recordings.reschedule(scheduled.id, margins, now)
+    return updated ? json(res, updated, 200, 'no-store') : json(res, { error: 'Registrazione non modificabile. Verifica le prenotazioni sul canale' }, 409)
   }
-  return json(res, recordings.add(id, store.channels.get(id).name, programme, margins), 201, 'no-store')
+  return json(res, recordings.add(id, store.channels.get(id).name, programme, { ...margins, kind: manual ? 'manual' : 'guide' }), 201, 'no-store')
 }
 
 async function api(url, res, req) {
@@ -166,7 +208,8 @@ async function api(url, res, req) {
       const job = recordings && recordings.get(q.get('c'), p.s)
       const [recording = null] = job ? await recordings.visible([job], req.headers.host, req.socket.remoteAddress) : []
       const recordingMargins = recordings ? { before: recordings.before / 60000, after: recordings.after / 60000 } : undefined
-      return json(res, { ...p, recording, recordingMargins })
+      const series = recordings ? recordings.seriesFor(q.get('c'), p.t) : null
+      return json(res, { ...p, recording, recordingMargins, followingSeries: Boolean(series?.enabled) })
     }
     case '/api/search': return json(res, store.search(q.get('q') || '', num(q.get('from'), Date.now())))
     default: return json(res, { error: 'non trovato' }, 404)
@@ -212,13 +255,19 @@ server.listen(PORT, () => console.log(`GuidaTV in ascolto su :${PORT}`))
 
 // L'epg può metterci minuti ad essere pronto al primo avvio: ritenta spesso finché non c'è una guida.
 let loops = 0
+let shuttingDown = false
 const loop = async () => {
   await store.refresh()
   if (loops++ % 18 === 0 || !store.streams.size) await loadStreams() // ~ogni 6h, o finché non c'è nulla
+  if (shuttingDown) return
+  if (recordings) {
+    try { recordings.syncSeries() } catch (err) { console.warn('Prenotazione serie:', err.message) }
+  }
   setTimeout(loop, (store.channels.size ? REFRESH_MIN : 1) * 60000)
 }
 loop()
 async function shutdown() {
+  shuttingDown = true
   server.close()
   if (recordings) await recordings.stop()
   process.exit(0)

@@ -239,3 +239,75 @@ test('dopo un riavvio uno stop richiesto recupera il video o rimane fermo se è 
     await rm(directory, { recursive: true, force: true })
   }
 })
+
+test('le serie evitano repliche identificate, rispettano i salti e propongono gli spostamenti', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'guidatv-series-'))
+  const now = Date.now()
+  const hour = 3600000
+  const p = (delay, episode, t = 'Serie') => ({ t, s: now + delay, e: now + delay + 1800000, episode })
+  const first = p(hour, '1.1')
+  const repeat = p(6 * hour, '1.1')
+  const second = p(25 * hour, '1.2')
+  const channel = { name: 'Iris', programmes: [first, repeat, second] }
+  const store = { channels: new Map([['iris', channel]]), streams: new Map([['iris', { url:'http://example.test/iris' }]]) }
+  const options = { directory, store, before: 120000, after: 300000 }
+  let queue = new Recordings(options)
+  try {
+    const rule = queue.follow('iris', channel.name, ' SERIE ')
+    queue.syncSeries(now)
+    queue.syncSeries(now)
+    assert.deepEqual(queue.list().map(job => job.episode), ['1.2', '1.1'])
+    const job = queue.get('iris', first.s)
+    const moved = p(2 * hour, '1.1')
+    channel.programmes = [moved, repeat, second]
+    queue.syncSeries(now)
+    assert.deepEqual(queue.change(job, now), { s: moved.s, e: moved.e })
+    assert.equal(queue.get('iris', moved.s), null)
+    const updated = queue.move(job, moved, { before: options.before, after: options.after }, now)
+    assert.equal(updated.id, job.id)
+    assert.equal(updated.captureTo, moved.e + options.after)
+    assert.equal(queue.change(updated, now), null)
+
+    assert.equal(queue.remove(queue.get('iris', second.s).id), true)
+    const later = p(48 * hour, '1.2')
+    const next = p(49 * hour, '1.3')
+    channel.programmes.push(later, next)
+    await queue.stop()
+    queue = new Recordings(options)
+    queue.syncSeries(now)
+    assert.equal(queue.get('iris', later.s), null)
+    assert.equal(queue.get('iris', next.s).seriesId, rule.id)
+    assert.equal(queue.unfollow(rule.id), true)
+    channel.programmes.push(p(72 * hour, '1.4'))
+    queue.syncSeries(now)
+    assert.equal(queue.list().length, 2)
+  } finally {
+    await queue.stop()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('il palinsesto lascia intatti orari manuali e corrispondenze ambigue', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'guidatv-manual-'))
+  const now = Date.now()
+  const start = now + 3600000
+  const programme = { t: 'Film', s: start, e: start + 3600000 }
+  const programmes = [1800000, 3600000].map(delta => ({ ...programme, s: programme.s + delta, e: programme.e + delta }))
+  const channel = { programmes }
+  const store = { channels: new Map([['iris', channel], ['rai4', channel]]) }
+  const queue = new Recordings({ directory, store, before: 0, after: 0 })
+  try {
+    const guide = queue.add('iris', 'Iris', programme)
+    const manual = queue.add('rai4', 'Rai 4', programme, { kind: 'manual' })
+    assert.equal(queue.change(guide, now), null)
+    channel.programmes = programmes.slice(0, 1)
+    assert.equal(queue.change(guide, now).s, programmes[0].s)
+    assert.equal(queue.change(manual, now), null)
+    queue.update(manual.id, 'failed', 'Nessun video')
+    assert.deepEqual(queue.outcomes(now).map(outcome => outcome.id), [manual.id])
+    assert.equal(queue.outcomes(now + 31 * 86400000).length, 0)
+  } finally {
+    await queue.stop()
+    await rm(directory, { recursive: true, force: true })
+  }
+})

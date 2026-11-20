@@ -1,5 +1,5 @@
 # Guida TV italiana: epg (iptv-org) scarica i palinsesti, web li serve.
-# Accesso: http://<ip-lan>:8085  oppure  http://<nome-host-tailscale>:8085
+# Accesso predefinito: http://127.0.0.1:8085. Per LAN/Tailscale configura GUIDATV_BIND.
 services:
   epg:
     build: ./epg
@@ -26,18 +26,19 @@ services:
       TZ: Europe/Rome
       EPG_URL: http://epg:3000/guide.xml
       REFRESH_MIN: "20"
-      STREAMS_M3U: /streams/official.m3u   # solo stream ufficiali; ricaricata ogni ~6 h
+      STREAMS_M3U: ${GUIDATV_STREAMS_M3U:-/streams/official.m3u}
       RECORDINGS_BEFORE_MIN: ${RECORDINGS_BEFORE_MIN:-2}
       RECORDINGS_AFTER_MIN: ${RECORDINGS_AFTER_MIN:-10}
-      RECORDINGS_SMB: ${GUIDATV_SMB_SHARE-//nas.local/TV}
-      RECORDINGS_SMB_IP: ${GUIDATV_SMB_IP-192.168.1.10}
-      RECORDINGS_SMB_TAILSCALE_HOST: ${GUIDATV_SMB_TAILSCALE_HOST-100.100.10.20}
+      RECORDINGS_MAX_CONCURRENT: ${RECORDINGS_MAX_CONCURRENT:-2}
+      RECORDINGS_SMB: ${GUIDATV_SMB_SHARE:-}
+      RECORDINGS_SMB_IP: ${GUIDATV_SMB_IP:-}
+      RECORDINGS_SMB_TAILSCALE_HOST: ${GUIDATV_SMB_TAILSCALE_HOST:-}
     volumes:
       - guidatv-data:/data   # ultima guida valida, usata se epg è giù
       - ./streams:/streams:ro
       - ${GUIDATV_SMB_DIR:-${HOME}/.config/guidatv}:/run/guidatv:ro
     ports:
-      - "8085:8080"
+      - "${GUIDATV_BIND-127.0.0.1}:${GUIDATV_PORT:-8085}:8080"
 
 volumes:
   guidatv-data:

@@ -7,11 +7,13 @@ Guida TV dei canali italiani, in locale. Raggiungibile da LAN e Tailscale.
 
 ## Uso
 ```
+test -e .env || cp .env.example .env
 docker compose up -d --build
 ```
-- LAN: `http://<ip-server>:8085`
-- Tailscale: `http://<nome-host-tailscale>:8085`
-- Stato: `http://<host>:8085/api/health`
+
+Apri `http://127.0.0.1:8085`. La guida parte senza NAS. Per LAN o Tailscale, imposta `GUIDATV_BIND=` su una rete fidata per ascoltare su tutte le interfacce, oppure indica l'indirizzo IP di una singola interfaccia. Usa `GUIDATV_PORT` per cambiare porta. Per l'accesso fuori casa usa Tailscale, perché GuidaTV non richiede un login.
+
+Configura i valori locali in `.env`, escluso da Git. `GUIDATV_STREAMS_M3U` permette di usare una playlist HTTP(S) o un file nel container, per esempio `/streams/local.m3u` dalla cartella `streams/`. Il file `streams/local.m3u` è escluso da Git.
 
 Su telefono: "Aggiungi a schermata Home" per averla come app.
 
@@ -40,19 +42,23 @@ In **Cinema**, **Serie TV** e **News** la guida mostra i programmi corrispondent
 
 ## Registrazioni
 
-Dalla scheda di un programma su un canale con stream diretto, **Registra** apre la prenotazione con i margini personalizzabili. Se negli orari scelti, margini inclusi, si superano le due registrazioni simultanee, GuidaTV mostra quali prenotazioni si sovrappongono e chiede una conferma. Se confermi, la registrazione che rimane in attesa parte appena si libera un posto, a condizione che il programma sia ancora in onda.
+Dalla scheda di un programma su un canale con stream diretto, **Registra** apre la prenotazione con i margini personalizzabili. Se superi il limite simultaneo (2 per impostazione predefinita, configurabile da 1 a 8 con `RECORDINGS_MAX_CONCURRENT`), GuidaTV mostra quali prenotazioni si sovrappongono e chiede una conferma. Una prenotazione in attesa parte appena si libera un posto se il programma è ancora in onda.
+
+**Registra la serie** prenota le prossime trasmissioni con lo stesso titolo sullo stesso canale agli aggiornamenti della guida. Usa **Salta puntata** per escludere una trasmissione oppure **Serie seguite** per fermare le nuove prenotazioni automatiche. Se la guida fornisce stagione ed episodio, GuidaTV li usa per riconoscere le repliche. Le nuove prenotazioni automatiche usano i margini predefiniti e rispettano il limite simultaneo durante la cattura.
+
+**Aggiorna prenotazione** appare quando il palinsesto propone un nuovo orario con una corrispondenza univoca entro tre ore. I margini si possono rivedere prima della conferma. **Registra per orario** permette di scegliere direttamente un canale con stream registrabile, inizio e fine, anche quando il programma manca dalla guida. La durata massima è 24 ore.
 
 In **Registrazioni** puoi vedere l'orario di cattura previsto, annullare le prenotazioni future e usare **Ferma e salva** sulle registrazioni in corso per trasferire al NAS quanto già acquisito. Se fermi una cattura prima dell'orario di fine del programma indicato in guida, la registrazione è contrassegnata come parziale.
 
 Il margine predefinito è di 2 minuti prima e 10 dopo. Per modificarlo, imposta `RECORDINGS_BEFORE_MIN` e `RECORDINGS_AFTER_MIN` nel file `.env` accanto a `docker-compose.yml` e applica la configurazione con `docker compose up -d --no-deps web`. I valori sono minuti interi da 0 a 60. Per aggiornare i margini di una prenotazione già in coda, usa **Modifica** in **Registrazioni**. GuidaTV mostra i nuovi orari di cattura e verifica le sovrapposizioni prima del salvataggio.
 
-Il servizio cattura in MPEG-TS in `/data/recordings`. A registrazione conclusa, racchiude audio e video in un file MP4 senza ricodificarli e trasferisce il file via SMB a `//nas.local/TV`. Dopo un trasferimento fallito, il file resta in locale e il servizio riprova dopo un minuto. Nel frattempo può trasferire le altre registrazioni in coda.
+Il servizio cattura in MPEG-TS in `/data/recordings`. Al termine, salva audio e video in MP4 senza ricodificarli e trasferisce il file alla condivisione configurata in `GUIDATV_SMB_SHARE`. Se il trasferimento fallisce, il file resta in locale e il servizio riprova dopo un minuto. Nel frattempo può trasferire le altre registrazioni. La finestra mostra durata e dimensione quando disponibili, l'orario del prossimo ritentativo e un contatore dei nuovi esiti per browser.
 
 Le registrazioni salvate restano visibili finché il file è nella condivisione. GuidaTV verifica il NAS mentre la finestra è aperta. Una cancellazione o uno spostamento si riflette alla verifica successiva. La finestra mostra prima le registrazioni in corso, in attesa o programmate e permette di cercare per titolo o canale, con 10 risultati per pagina. Le registrazioni fallite restano visibili finché vengono rimosse dalla finestra.
 
-**Riproduci** usa il player configurato in ⚙ e apre un indirizzo SMB diretto al NAS. Su LAN usa l'host di `GUIDATV_SMB_SHARE`. Quando GuidaTV è aperta con un indirizzo IP Tailscale o un nome MagicDNS completo (`.ts.net`), usa `GUIDATV_SMB_TAILSCALE_HOST` (predefinito in Compose a `100.100.10.20`). Il dispositivo che riproduce deve poter accedere alla condivisione SMB e VLC può chiedere le credenziali del NAS.
+**Riproduci** usa il player configurato in ⚙ e apre un indirizzo SMB diretto al NAS. Su LAN usa l'host di `GUIDATV_SMB_SHARE`. Via Tailscale imposta `GUIDATV_SMB_TAILSCALE_HOST` all'indirizzo Tailscale o al nome MagicDNS del NAS. Il dispositivo che riproduce deve poter accedere alla condivisione SMB e VLC può chiedere le credenziali del NAS.
 
-Compose legge le credenziali da `~/.config/guidatv/smb.credentials` (permessi `600`), con le righe `username=nome_utente` e `password=…`. L'utente SMB deve poter creare e rinominare i file nella condivisione. `GUIDATV_SMB_DIR`, `GUIDATV_SMB_SHARE` e `GUIDATV_SMB_IP` possono essere impostati nell'ambiente di Compose per usare percorsi o indirizzi diversi. Un valore vuoto per `GUIDATV_SMB_SHARE` disattiva la funzione.
+Per abilitare le registrazioni, imposta `GUIDATV_SMB_SHARE`, ad esempio `//nas.local/TV`. Se Docker non risolve il nome del NAS, imposta anche `GUIDATV_SMB_IP` al suo indirizzo LAN. Crea `~/.config/guidatv/smb.credentials` (permessi `600`) con le righe `username=nome_utente` e `password=…`. L'utente SMB deve poter leggere, creare e rinominare file nella condivisione. Usa `GUIDATV_SMB_DIR` per scegliere un'altra directory di credenziali.
 
 ## Sviluppo
 `cd server && npm install && npm test`

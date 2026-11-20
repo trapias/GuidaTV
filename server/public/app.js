@@ -7,7 +7,7 @@ const store = {
   set(k, v) { try { localStorage.setItem('gtv.' + k, JSON.stringify(v)) } catch {} },
 }
 const state = {
-  channels: [], byId: new Map(), nowData: {},
+  channels: [], recordableChannels: [], byId: new Map(), nowData: {},
   favs: new Set(store.get('favs', [])),
   view: store.get('view', 'now'),
   group: store.get('group', 'Tutti'),
@@ -299,6 +299,24 @@ function recordingTime(job) {
     return `Cattura prevista ${captureWindow(job.captureFrom, job.captureTo, job.start)}`
   }
 }
+function recordingMetrics(job) {
+  const parts = []
+  if (job.durationMs >= 1000) {
+    const seconds = Math.round(job.durationMs / 1000)
+    const hours = Math.floor(seconds / 3600)
+    const minutes = Math.floor(seconds / 60) % 60
+    parts.push(`Video ${[hours && `${hours} h`, minutes && `${minutes} min`, seconds % 60 && `${seconds % 60} s`].filter(Boolean).join(' ')}`)
+  }
+  if (job.bytes > 0) {
+    const size = new Intl.NumberFormat('it-IT', { maximumFractionDigits: 1 })
+    const gb = job.bytes >= 1000000000
+    parts.push(`${size.format(job.bytes / (gb ? 1000000000 : 1000000))} ${gb ? 'GB' : 'MB'}`)
+  }
+  if (job.status === 'waiting' && job.uploadAfter > Date.now()) {
+    parts.push(`Nuovo tentativo dalle ${captureTime(job.uploadAfter, Date.now())}`)
+  }
+  return parts.join(' · ')
+}
 const cancelRecording = job => api(`recordings?id=${encodeURIComponent(job.id)}`, { method: 'DELETE' })
 const stopRecording = job => api(`recordings?action=stop&id=${encodeURIComponent(job.id)}`, { method: 'POST' })
 const recordingPlay = (job, report) => job?.playUrl && h('button', {
@@ -311,6 +329,19 @@ const recordingPlay = (job, report) => job?.playUrl && h('button', {
 const recordingOrder = { recording: 0, waiting: 1, scheduled: 2, saved: 3, failed: 3 }
 const RECORDINGS_PER_PAGE = 10
 let recordingTimer
+let recordingDialogOpen = false
+let badgeRequest
+function refreshRecordingBadge() {
+  badgeRequest ||= api('recordings?view=outcomes').then(outcomes => {
+    const ids = outcomes.map(row => row.id)
+    if (recordingDialogOpen) store.set('recordingOutcomes', ids)
+    const seen = new Set(store.get('recordingOutcomes', []))
+    const count = ids.filter(id => !seen.has(id)).length
+    const button = $('#recordings')
+    button.textContent = count ? `Registrazioni (${count})` : 'Registrazioni'
+    button.setAttribute('aria-label', count ? `Registrazioni, ${count} nuovi esiti` : 'Registrazioni')
+  }).catch(() => {}).finally(() => { badgeRequest = null })
+}
 function openRecordings() {
   const list = h('div', { class: 'results recording-list' }, 'Caricamento…')
   const message = h('div', { class: 'meta', role: 'status', hidden: true })
@@ -344,30 +375,62 @@ function openRecordings() {
       } catch (err) { report(err.message) } finally { button.disabled = false }
     } }, label)
   }
-  function edit(job, source) {
+  function pane(title, source, render) {
     const closeEditor = () => {
       editor.remove()
       panel.hidden = false
       const target = source.isConnected ? source : close
       target.focus()
     }
-    const form = recordingForm({
-      programme: { s: job.start, e: job.end },
-      margins: { before: (job.start - job.captureFrom) / 60000, after: (job.captureTo - job.end) / 60000 },
-      params: { id: job.id }, method: 'PATCH', label: 'Salva modifiche', confirmLabel: 'Salva comunque',
-      onCancel: closeEditor,
-      onSaved: async () => {
-        closeEditor()
-        report('Orari aggiornati')
-        await pending
-        await load()
-      },
-    })
-    const heading = h('h2', { tabindex: '-1' }, 'Modifica registrazione')
-    const editor = h('div', { class: 'sh' }, heading, h('p', {}, job.title), form)
+    const heading = h('h2', { tabindex: '-1' }, title)
+    const editor = h('div', { class: 'sh' }, heading, render(closeEditor))
     panel.hidden = true
     sheet.append(editor)
     heading.focus()
+  }
+  const saved = closeEditor => async () => {
+    closeEditor()
+    report('Prenotazione salvata')
+    await pending
+    await load()
+  }
+  function edit(job, source, useGuide = false) {
+    const programme = useGuide ? job.guideChange : { s: job.start, e: job.end }
+    const params = { id: job.id }
+    if (useGuide) Object.assign(params, { guideStart: programme.s, guideEnd: programme.e })
+    pane(useGuide ? 'Aggiorna dal palinsesto' : 'Modifica registrazione', source, onCancel => [
+      h('p', {}, job.title),
+      job.kind === 'manual' ? manualRecordingForm({ job, onCancel, onSaved: saved(onCancel) }) : recordingForm({
+      programme,
+      margins: { before: (job.start - job.captureFrom) / 60000, after: (job.captureTo - job.end) / 60000 },
+      params, method: 'PATCH', label: 'Salva modifiche', confirmLabel: 'Salva comunque', onCancel, onSaved: saved(onCancel),
+      }),
+    ])
+  }
+  function openSeries(source) {
+    pane('Serie seguite', source, closeEditor => {
+      const results = h('div', { class: 'results' }, 'Caricamento…')
+      const feedback = h('div', { class: 'meta', role: 'status' })
+      const loadSeries = async () => {
+        try {
+          const rules = await api('recordings?view=series')
+          results.replaceChildren(...(rules.length ? rules.map(rule => h('div', { class: 'res' },
+            h('div', { class: 'rm' }, h('div', { class: 'rn' }, rule.title), h('div', { class: 'rc' }, rule.channelName)),
+            h('button', { class: 'btn', onclick: async e => {
+              const button = e.currentTarget
+              button.disabled = true
+              try {
+                await api(`recordings?action=series&id=${encodeURIComponent(rule.id)}`, { method: 'DELETE' })
+                feedback.textContent = 'Le puntate già in coda restano prenotate.'
+                await loadSeries()
+              } catch (err) { feedback.textContent = err.message } finally { button.disabled = false }
+            } }, 'Smetti di seguire'),
+          )) : [h('div', { class: 'empty' }, 'Nessuna serie seguita.')]))
+        } catch (err) { results.textContent = err.message }
+      }
+      loadSeries()
+      return [results, feedback, h('div', { class: 'acts' }, h('button', { class: 'btn', onclick: closeEditor }, 'Indietro'))]
+    })
   }
   function draw() {
     const query = search.value.trim().toLowerCase()
@@ -386,11 +449,15 @@ function openRecordings() {
         h('div', { class: 'rn' }, job.title),
         h('div', { class: 'rc' }, `${job.channelName} · ${fmtDay(job.start)} · ${fmt(job.start)}–${fmt(job.end)}`),
         h('div', { class: 'rc' }, recordingStatus(job)),
-        h('div', { class: 'rc' }, recordingTime(job))),
+        h('div', { class: 'rc' }, recordingTime(job)),
+        h('div', { class: 'rc' }, recordingMetrics(job)),
+        job.guideChange && h('div', { class: 'rc' },
+          `Nuovo orario in guida ${captureWindow(job.guideChange.s, job.guideChange.e, job.start)}`)),
       recordingPlay(job, report),
       job.status === 'scheduled' && h('div', { class: 'recording-actions' },
         h('button', { class: 'btn', onclick: e => edit(job, e.currentTarget) }, 'Modifica'),
-        action(job, 'Annulla', cancelRecording)),
+        job.guideChange && h('button', { class: 'btn', onclick: e => edit(job, e.currentTarget, true) }, 'Aggiorna prenotazione'),
+        action(job, job.seriesId ? 'Salta puntata' : 'Annulla', cancelRecording)),
       job.status === 'failed' && action(job, 'Rimuovi', cancelRecording),
       job.status === 'recording' && job.stoppedAt == null && action(job, 'Ferma e salva', stopRecording),
     )) : [h('div', { class: 'empty' }, query ? 'Nessun risultato.' : 'Nessuna registrazione.')]))
@@ -414,16 +481,25 @@ function openRecordings() {
     }
   }).finally(() => { pending = null })
   const close = h('button', { class: 'btn', autofocus: true, onclick: () => sheet.close() }, 'Chiudi')
-  const panel = h('div', { class: 'sh recordings-sheet' }, h('h2', {}, 'Registrazioni'), search, list, pages, message,
+  const tools = h('div', { class: 'recording-tools' },
+    h('button', { class: 'btn', onclick: e => pane('Registra per orario', e.currentTarget, onCancel =>
+      manualRecordingForm({ onCancel, onSaved: saved(onCancel) })) }, 'Registra per orario'),
+    h('button', { class: 'btn', onclick: e => openSeries(e.currentTarget) }, 'Serie seguite'))
+  const panel = h('div', { class: 'sh recordings-sheet' }, h('h2', {}, 'Registrazioni'), tools, search, list, pages, message,
     h('div', { class: 'acts' }, close))
   sheet.replaceChildren(panel)
   sheet.showModal()
+  recordingDialogOpen = true
+  refreshRecordingBadge()
   load()
   clearInterval(recordingTimer)
   recordingTimer = setInterval(load, 5000)
 }
 $('#recordings').addEventListener('click', openRecordings)
-sheet.addEventListener('close', () => clearInterval(recordingTimer))
+sheet.addEventListener('close', () => {
+  recordingDialogOpen = false
+  clearInterval(recordingTimer)
+})
 
 function recordingForm({
   programme, margins, params, method = 'POST', label = 'Programma registrazione', confirmLabel = 'Programma comunque',
@@ -432,6 +508,51 @@ function recordingForm({
   const input = name => h('input', { type: 'number', name, min: '0', max: '60', step: '1', required: true, value: margins[name] })
   const before = input('before')
   const after = input('after')
+  return bookingForm({
+    controls: [before, after], method, label, confirmLabel, onCancel, onSaved,
+    fields: h('div', { class: 'recording-margins' }, h('label', { class: 'frow' }, 'Minuti prima', before),
+      h('label', { class: 'frow' }, 'Minuti dopo', after)),
+    values: () => ({
+      params: { ...params, before: before.valueAsNumber, after: after.valueAsNumber },
+      from: programme.s - before.valueAsNumber * 60000, to: programme.e + after.valueAsNumber * 60000,
+      reference: programme.s,
+    }),
+  })
+}
+
+function localDateTime(time) {
+  const date = new Date(time)
+  return new Date(time - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16)
+}
+
+function manualRecordingForm({ job, onCancel, onSaved }) {
+  const nextMinute = Math.ceil(Date.now() / 60000) * 60000
+  const channel = !job && h('select', { required: true },
+    h('option', { value: '' }, 'Scegli un canale'),
+    state.recordableChannels.map(ch => h('option', { value: ch.id }, ch.name)))
+  const start = h('input', { type: 'datetime-local', required: true, value: localDateTime(job?.start ?? nextMinute) })
+  const end = h('input', { type: 'datetime-local', required: true, value: localDateTime(job?.end ?? nextMinute + 3600000) })
+  const title = h('input', { type: 'text', maxlength: '120', value: job?.title || '', placeholder: 'Registrazione manuale' })
+  return bookingForm({
+    controls: [channel, start, end, title].filter(Boolean), method: job ? 'PATCH' : 'POST',
+    label: job ? 'Salva modifiche' : 'Programma registrazione', confirmLabel: job ? 'Salva comunque' : 'Programma comunque',
+    onCancel, onSaved,
+    fields: [channel && h('label', { class: 'frow' }, 'Canale', channel),
+      h('label', { class: 'frow' }, 'Titolo facoltativo', title),
+      h('div', { class: 'recording-margins' }, h('label', { class: 'frow' }, 'Inizio', start),
+        h('label', { class: 'frow' }, 'Fine', end))],
+    values: () => {
+      const s = new Date(start.value).getTime()
+      const e = new Date(end.value).getTime()
+      return {
+        params: { action: 'manual', ...(job ? { id: job.id } : { c: channel.value }), s, e, title: title.value },
+        from: s, to: e, reference: s,
+      }
+    },
+  })
+}
+
+function bookingForm({ controls, fields, values, method, label, confirmLabel, onCancel, onSaved }) {
   const estimate = h('p', { class: 'meta' })
   const feedback = h('div', { class: 'recording-feedback', role: 'status', hidden: true })
   const submit = h('button', { class: 'btn pri', type: 'submit' }, label)
@@ -441,15 +562,15 @@ function recordingForm({
     confirmation = undefined
     submit.textContent = label
     feedback.hidden = true
-    estimate.textContent = before.validity.valid && after.validity.valid
-      ? `Cattura prevista ${captureWindow(programme.s - before.valueAsNumber * 60000,
-        programme.e + after.valueAsNumber * 60000, programme.s)}` : ''
+    const { from, to, reference } = values()
+    estimate.textContent = from < to ? `Cattura prevista ${captureWindow(from, to, reference)}` : ''
   }
   const form = h('form', { class: 'recording-form', oninput: refresh, onsubmit: async e => {
     e.preventDefault()
-    const q = new URLSearchParams({ ...params, before: before.valueAsNumber, after: after.valueAsNumber })
+    const { params, reference } = values()
+    const q = new URLSearchParams(params)
     if (confirmation) q.set('confirm', confirmation)
-    for (const control of [before, after, submit, cancel]) control.disabled = true
+    for (const control of [...controls, submit, cancel]) control.disabled = true
     try {
       const job = await api(`recordings?${q}`, { method })
       await onSaved(job)
@@ -461,18 +582,16 @@ function recordingForm({
         submit.textContent = confirmLabel
         feedback.replaceChildren(h('p', {}, `In alcuni orari supereresti il limite di ${limit} registrazioni in contemporanea.`),
           h('ul', {}, conflicts.map(job => h('li', {},
-            `${job.title} · ${job.channelName} · ${captureWindow(job.captureFrom, job.captureTo, programme.s)}`))))
+            `${job.title} · ${job.channelName} · ${captureWindow(job.captureFrom, job.captureTo, reference)}`))))
         feedback.scrollIntoView({ block: 'nearest' })
       } else {
         feedback.textContent = err.message
       }
     } finally {
-      for (const control of [before, after, submit, cancel]) control.disabled = false
+      for (const control of [...controls, submit, cancel]) control.disabled = false
     }
   } },
-    h('div', { class: 'recording-margins' }, h('label', { class: 'frow' }, 'Minuti prima', before),
-      h('label', { class: 'frow' }, 'Minuti dopo', after)),
-    estimate, feedback, h('div', { class: 'acts' }, cancel, submit))
+    fields, estimate, feedback, h('div', { class: 'acts' }, cancel, submit))
   refresh()
   return form
 }
@@ -488,6 +607,20 @@ async function openDetail(chId, s) {
   const status = h('div', { class: 'meta', role: 'status' }, p.recording && recordingStatus(p.recording))
   const capture = p.recording && recordingTime(p.recording)
   const timing = h('div', { class: 'meta', hidden: !capture }, capture)
+  const series = p.recordingMargins && ch?.live && !ch.web && h('button', {
+    class: 'btn', disabled: p.followingSeries, onclick: async e => {
+      const button = e.currentTarget
+      button.disabled = true
+      try {
+        const q = new URLSearchParams({ action: 'series', c: chId, s })
+        await api(`recordings?${q}`, { method: 'POST' })
+        button.textContent = 'Serie seguita'
+      } catch (err) {
+        button.disabled = false
+        status.textContent = err.message
+      }
+    },
+  }, p.followingSeries ? 'Serie seguita' : 'Registra la serie')
   let form, record
   if (p.recordingMargins && ch?.live && !ch.web && p.e > Date.now() && !p.recording) {
     record = h('button', { class: 'btn', onclick: () => {
@@ -519,7 +652,7 @@ async function openDetail(chId, s) {
     h('div', { class: 'meta' }, `${ch?.lcn ? ch.lcn + ' · ' : ''}${ch?.name ?? chId} · ${fmtDay(p.s)} · ${fmt(p.s)}–${fmt(p.e)}${p.cat ? ' · ' + p.cat : ''}`),
     p.desc && h('p', {}, p.desc),
     status, timing, form,
-    h('div', { class: 'acts' }, live, record, recordingPlay(p.recording, text => { status.textContent = text }), ics, close)))
+    h('div', { class: 'acts' }, live, record, series, recordingPlay(p.recording, text => { status.textContent = text }), ics, close)))
   sheet.showModal()
 }
 sheet.addEventListener('click', e => { if (e.target === sheet) sheet.close() })
@@ -562,10 +695,15 @@ async function init() {
   try {
     const [channels, nowData, health] = await Promise.all([api('channels'), api('now'), api('health')])
     state.channels = channels.filter(c => c.n > 0).sort(byTelecomando)
+    state.recordableChannels = channels.filter(ch => ch.live && !ch.web).sort(byTelecomando)
     state.byId = new Map(state.channels.map(c => [c.id, c]))
     state.nowData = nowData
     state.recordingEnabled = health.recordingEnabled
     $('#recordings').hidden = !state.recordingEnabled
+    if (state.recordingEnabled) {
+      refreshRecordingBadge()
+      setInterval(refreshRecordingBadge, 30000)
+    }
     if (!state.channels.length) {
       main.replaceChildren(h('div', { class: 'empty' }, 'La guida non è ancora pronta: il primo download può richiedere qualche minuto. Riprova tra poco.'))
       return setTimeout(init, 20000)

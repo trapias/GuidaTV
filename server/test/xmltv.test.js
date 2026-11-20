@@ -21,6 +21,17 @@ test('parseXmltv: entità, duplicati e intervalli invalidi', () => {
   assert.equal(ch.programmes[0].t, 'Uno & Mattina')
   assert.equal(ch.group, 'Rai')
 })
+test('episodi XMLTV e numerazione a schermo producono la stessa identità', () => {
+  const episodes = [
+    '<episode-num system="xmltv_ns">0/4 . 1/22 . </episode-num>',
+    '<episode-num system="onscreen">S01E02</episode-num>',
+    '<episode-num system="xmltv_ns">. 1 .</episode-num>',
+  ]
+  const channel = parseXmltv(`<tv><channel id="test"><display-name>Test</display-name></channel>
+    ${episodes.map((fields, i) => `<programme channel="test" start="202611171${i}0000 +0100" stop="202611171${i + 1}0000 +0100"><title>Serie</title>${fields}</programme>`).join('')}
+    </tv>`).get('test')
+  assert.deepEqual(channel.programmes.map(p => p.episode), ['1.2', '1.2', null])
+})
 test('store: now e search senza accenti', () => {
   const st = new Store({ epgUrl: '', dataDir: '', log: console })
   st.apply(XML)
