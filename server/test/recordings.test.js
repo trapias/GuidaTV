@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { Recordings } from '../src/recordings.js'
 import { SmbArchive } from '../src/smb.js'
 import { encodeMovieMetadata } from '../src/vsmeta.js'
+import { captureDynamic } from '../src/recording-capture.js'
 
 test('la coda sopravvive al riavvio e conserva il video finché il NAS non lo riceve', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'guidatv-recordings-'))
@@ -389,6 +390,86 @@ test('Video Station riceve il file nativo del film prima della pubblicazione del
 
     const sport = queue.add('rai2', 'Rai 2', { ...film, t: 'Gara', type: 'sport' })
     assert.equal(await queue.prepareMovieSidecar(sport), null)
+  } finally {
+    await queue.stop()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('estende solo la cattura attiva e conferma i conflitti nella finestra aggiunta', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'guidatv-extend-'))
+  const queue = new Recordings({ directory, before: 0, after: 0, limit: 1 })
+  const now = Date.now()
+  const job = queue.add('tv8', 'TV8', { t: 'Gara', s: now - 1000, e: now + 60000 })
+  const other = queue.add('iris', 'Iris', { t: 'Film', s: job.captureTo, e: now + 3600000 })
+  try {
+    queue.update(job.id, 'recording')
+    let deadline
+    queue.active.set(job.id, { extend: until => { deadline = until; return true }, stop() {} })
+    assert.deepEqual(queue.extendCapture(job.id, job.captureTo, 15, null, now).conflicts.map(row => row.id), [other.id])
+    assert.equal(deadline, undefined)
+    const { updated } = queue.extendCapture(job.id, job.captureTo, 15, other.id, now)
+    assert.equal(updated.captureTo, job.captureTo + 15 * 60000)
+    assert.equal(deadline, updated.captureTo)
+    assert.deepEqual(queue.extendCapture(job.id, job.captureTo, 15, other.id, now), {})
+  } finally {
+    await queue.stop()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('la cattura a sorgente risolta rispetta la nuova scadenza', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'guidatv-extended-source-'))
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'] })
+  const now = Date.now()
+  const row = { captureTo: now + 100, start: now, end: now + 10000 }
+  let signal
+  let ready
+  const waiting = new Promise(resolve => { ready = resolve })
+  const source = { resolve(requestSignal) {
+    signal = requestSignal
+    ready()
+    return new Promise((_, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }))
+  } }
+  const capture = captureDynamic(row, source, directory)
+  try {
+    await waiting
+    assert.equal(capture.extend(now + 200), true)
+    t.mock.timers.tick(100)
+    assert.equal(signal.aborted, false)
+    t.mock.timers.tick(100)
+    assert.equal(signal.aborted, true)
+    await capture.done
+    assert.equal(capture.extend(now + 300), false)
+  } finally {
+    capture.stop()
+    await capture.done
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('il ricontrollo della guida rispetta la finestra e distingue gli orari coperti', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'guidatv-watch-'))
+  const now = Date.now(), minute = 60000
+  const p = { t: 'Gara', s: now + 70 * minute, e: now + 120 * minute }
+  const channel = { programmes: [p] }
+  const store = { channels: new Map([['tv8', channel]]) }
+  const queue = new Recordings({ directory, store, before: 10 * minute, after: 10 * minute })
+  try {
+    const job = queue.add('tv8', 'TV8', p)
+    assert.deepEqual(queue.pendingGuideChecks(now), [])
+    queue.watchGuide(job.id, true, now)
+    assert.deepEqual(queue.pendingGuideChecks(now - 35 * minute), [])
+    assert.deepEqual(queue.pendingGuideChecks(now + 46 * minute), [])
+    const pending = queue.pendingGuideChecks(now)
+    assert.deepEqual(pending.map(row => row.id), [job.id])
+    channel.programmes = [{ ...p, s: p.s - 5 * minute }]
+    assert.equal(queue.review(job, now).covered, true)
+    channel.programmes = [{ ...p, s: p.s - 15 * minute }]
+    assert.equal(queue.review(job, now).covered, false)
+    queue.markGuideChecked(pending, now)
+    assert.deepEqual(queue.pendingGuideChecks(now), [])
+    assert.equal(queue.getById(job.id).captureFrom, job.captureFrom)
   } finally {
     await queue.stop()
     await rm(directory, { recursive: true, force: true })

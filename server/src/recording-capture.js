@@ -13,7 +13,8 @@ export async function fileSize(path) {
 
 export function captureDynamic(row, source, directory) {
   const abort = new AbortController()
-  let child, killTimer, stoppedAt, failure, reason
+  let child, killTimer, stoppedAt, failure, reason, timer
+  let finished = false
   let hasMedia = false
   let forcedStop = false
   const stop = (error, at) => {
@@ -26,7 +27,14 @@ export function captureDynamic(row, source, directory) {
     }
     return true
   }
-  const timer = setTimeout(() => stop(), Math.max(0, row.captureTo - Date.now()))
+  const extend = until => {
+    if (abort.signal.aborted || finished) return false
+    row.captureTo = until
+    clearTimeout(timer)
+    timer = setTimeout(stop, Math.max(0, until - Date.now()))
+    return true
+  }
+  extend(row.captureTo)
   const done = (async () => {
     await mkdir(directory, { recursive: true })
     let retry = 10000
@@ -70,6 +78,6 @@ export function captureDynamic(row, source, directory) {
       retry = Math.min(retry * 2, 60000)
     }
     return { stoppedAt, reason, failure }
-  })().finally(() => { clearTimeout(timer); clearTimeout(killTimer) })
-  return { stop, done }
+  })().finally(() => { finished = true; clearTimeout(timer); clearTimeout(killTimer) })
+  return { stop, done, extend }
 }

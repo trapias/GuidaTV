@@ -1,5 +1,8 @@
 FROM node:22-alpine
-RUN apk add --no-cache ffmpeg samba-client
+RUN apk add --no-cache ffmpeg samba-client python3 py3-cryptography \
+ && apk add --no-cache --virtual .pip py3-pip \
+ && pip install --break-system-packages --no-cache-dir 'smbprotocol==1.17.0' \
+ && apk del .pip
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci --omit=dev

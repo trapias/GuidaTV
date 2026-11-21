@@ -12,7 +12,7 @@ const state = {
   favs: new Set(store.get('favs', [])),
   view: store.get('view', 'now'),
   group: store.get('group', 'Tutti'),
-  day: 0, recordingEnabled: false, epgRefreshEnabled: false,
+  day: 0, recordingEnabled: false, epgRefreshEnabled: false, browserPlayer: false,
   query: '',
   player: { mode: /iPhone|iPad|iPod/.test(navigator.userAgent) ? 'scheme' : 'm3u', tpl: 'vlc://{url}', ...store.get('player', {}) },
 }
@@ -158,10 +158,46 @@ function openSettings() {
     h('p', {}, 'Questa scelta vale per le dirette e le registrazioni su questo dispositivo.'),
     h('label', { class: 'frow' }, 'Come aprire lo stream', mode), row, sourceRow, folderRow,
     h('div', { class: 'acts' }, save, h('button', { class: 'btn', onclick: () => sheet.close() }, 'Annulla')),
-    guideRefresh))
+    guideRefresh, h('button', { class: 'btn', onclick: openSetup }, 'Verifica configurazione')))
   sheet.showModal()
 }
 $('#settings').addEventListener('click', openSettings)
+
+function openSetup() {
+  const status = h('div', { class: 'meta', role: 'status' }, 'Controllo configurazione…')
+  const info = h('dl', { class: 'setup-info' })
+  const test = h('button', { class: 'btn', disabled: true, onclick: () => load('POST') }, 'Prova scrittura sul NAS')
+  async function load(method) {
+    test.disabled = true
+    if (method === 'POST') status.textContent = 'Prova di scrittura in corso…'
+    try {
+      const { guide, recording, nas, freeBytes, player, playerConfigured, channels } = await api('setup', { method })
+      const date = time => new Date(time).toLocaleString('it-IT')
+      const rows = [
+        ['Guida TV', guide.loadedAt
+          ? `${guide.ok ? 'Disponibile' : 'Ultima copia disponibile'} · ${guide.channels} canali · ${date(guide.loadedAt)}`
+          : 'In attesa del primo palinsesto'],
+        ['Aggiornamento su richiesta', guide.refreshEnabled ? 'Disponibile' : 'Disattivato'],
+        ['Scrittura sul NAS', !recording ? 'Registrazioni disattivate' : nas
+          ? `${nas.ok ? 'Riuscita' : 'Fallita: controlla condivisione, credenziali e permessi'} · ${date(nas.at)}` : 'Da verificare'],
+        ['Spazio locale', freeBytes == null ? 'Non disponibile' : `${(freeBytes / 2 ** 30).toLocaleString('it-IT', { maximumFractionDigits: 1 })} GiB liberi`],
+        ['Player nel browser', player ? 'Attivo, con password' : playerConfigured ? 'Controlla il file browser.password' : 'Disattivato'],
+      ]
+      const names = channels.sort((a, b) => (a.lcn || Infinity) - (b.lcn || Infinity) || a.name.localeCompare(b.name, 'it'))
+        .map(ch => ch.lcn ? `${ch.lcn} ${ch.name}` : ch.name)
+      info.replaceChildren(...rows.flatMap(([label, value]) => [h('dt', {}, label), h('dd', {}, value)]),
+        h('dt', {}, `Canali registrabili (${names.length})`), h('dd', {}, names.join(' · ') || 'Nessuno'))
+      status.textContent = ''
+      test.disabled = !recording
+    } catch (error) {
+      status.textContent = error.message
+      test.disabled = false
+    }
+  }
+  sheet.replaceChildren(h('div', { class: 'sh' }, h('h2', {}, 'Verifica configurazione'), status, info, test,
+    h('div', { class: 'acts' }, h('button', { class: 'btn', onclick: openSettings }, 'Indietro'))))
+  load('GET')
+}
 
 // ---------- ordinamento ----------
 const TOP = ['rai1', 'rai2', 'rai3', 'rete4', 'canale5', 'italia1', 'la7', 'tv8', 'nove', '20mediaset', 'rai4', 'iris', 'la5', 'rai5', 'raimovie', 'raipremium', 'cine34', 'focus', 'topcrime', 'boing', 'raigulp', 'raiyoyo', 'raistoria', 'raisport', 'la7d', 'mediasetextra', 'dmax', 'realtime', 'cielo', 'rainews24', 'skytg24', 'tgcom24']
@@ -410,6 +446,22 @@ function recordingMetrics(job) {
 }
 const cancelRecording = job => api(`recordings?id=${encodeURIComponent(job.id)}`, { method: 'DELETE' })
 const stopRecording = job => api(`recordings?action=stop&id=${encodeURIComponent(job.id)}`, { method: 'POST' })
+async function extendRecording(job, minutes) {
+  const query = new URLSearchParams({ action: 'extend', id: job.id, until: job.captureTo, minutes })
+  const request = () => api(`recordings?${query}`, { method: 'POST' })
+  try { return await request() } catch (error) {
+    const { conflicts, limit } = error.data || {}
+    if (!conflicts) throw error
+    const titles = conflicts.map(other => other.title).join(', ')
+    if (!confirm(`L’estensione supererebbe il limite di ${limit} registrazioni contemporanee. In sovrapposizione: ${titles}. Vuoi estendere comunque?`)) return
+    query.set('confirm', conflicts.map(other => other.id).sort().join(','))
+    return request()
+  }
+}
+const watchRecording = job => {
+  const query = new URLSearchParams({ action: 'watch', id: job.id, enabled: job.watchGuide ? 0 : 1 })
+  return api(`recordings?${query}`, { method: 'PATCH' })
+}
 function recordingPlaylistUrl(playUrl) {
   if (!isMac || state.player.macSmb) return playUrl
   const path = new URL(playUrl).pathname
@@ -425,6 +477,50 @@ const recordingPlay = (job, report) => job?.playUrl && h('button', {
       `#EXTM3U\n#EXTINF:-1,${name}\n${recordingPlaylistUrl(job.playUrl)}\n`, 'audio/x-mpegurl;charset=utf-8'), { name, url: job.playUrl }, report)
   },
 }, '▶ Riproduci')
+
+function recordingBrowserButton(job, onOpen) {
+  return state.browserPlayer && job?.status === 'saved' && job.archiveVerified && /\.mp4$/i.test(job.filename) &&
+    h('button', { class: 'btn', onclick: e => onOpen(e.currentTarget) }, '▶ Nel browser')
+}
+
+function recordingPlayerView(job, onBack) {
+  const feedback = h('p', { class: 'meta', role: 'status' }, 'Verifico l’accesso al player…')
+  const password = h('input', { type: 'password', required: true, autocomplete: 'current-password' })
+  const video = h('video', { class: 'recording-video', controls: true, playsinline: true, preload: 'metadata', hidden: true,
+    onerror: () => { if (video.hasAttribute('src')) feedback.textContent = 'Video non disponibile o formato audio/video non supportato dal browser.' } })
+  const stop = () => { video.removeAttribute('src'); video.load() }
+  function showVideo() {
+    if (!video.isConnected || !sheet.open) return
+    form.hidden = true
+    video.hidden = false
+    video.src = `/api/recordings/media?id=${encodeURIComponent(job.id)}`
+    feedback.textContent = ''
+  }
+  const submit = h('button', { class: 'btn pri', type: 'submit' }, 'Accedi')
+  const form = h('form', { class: 'recording-form', hidden: true, onsubmit: async e => {
+    e.preventDefault()
+    submit.disabled = true
+    try {
+      await api('recordings/player', { method: 'POST', headers: { 'X-Playback-Password': encodeURIComponent(password.value) } })
+      password.value = ''
+      showVideo()
+    } catch (error) { feedback.textContent = error.message } finally { submit.disabled = false }
+  } }, h('label', { class: 'frow' }, 'Password del player web', password), submit)
+  sheet.addEventListener('close', stop, { once: true })
+  api('recordings/player').then(session => {
+    if (session.authenticated) showVideo()
+    else {
+      form.hidden = false
+      feedback.textContent = ''
+      if (password.isConnected) password.focus()
+    }
+  }).catch(error => { feedback.textContent = error.message })
+  return [feedback, video, form, h('div', { class: 'acts' }, h('button', { class: 'btn', onclick: () => {
+    sheet.removeEventListener('close', stop)
+    stop()
+    onBack()
+  } }, 'Indietro'))]
+}
 const recordingOrder = { recording: 0, waiting: 1, scheduled: 2, saved: 3, failed: 3 }
 const RECORDINGS_PER_PAGE = 10
 let recordingTimer
@@ -438,7 +534,7 @@ function refreshRecordingBadge() {
     const count = ids.filter(id => !seen.has(id)).length
     const button = $('#recordings')
     button.textContent = count ? `Registrazioni (${count})` : 'Registrazioni'
-    button.setAttribute('aria-label', count ? `Registrazioni, ${count} nuovi esiti` : 'Registrazioni')
+    button.setAttribute('aria-label', count ? `Registrazioni, ${count} nuovi avvisi` : 'Registrazioni')
   }).catch(() => {}).finally(() => { badgeRequest = null })
 }
 function openRecordings() {
@@ -550,15 +646,22 @@ function openRecordings() {
         h('div', { class: 'rc' }, recordingStatus(job)),
         h('div', { class: 'rc' }, recordingTime(job)),
         h('div', { class: 'rc' }, recordingMetrics(job)),
+        job.status === 'scheduled' && job.watchGuide && h('div', { class: 'rc' }, job.guideCheckedAt
+          ? `Guida ricontrollata il ${fmtDay(job.guideCheckedAt)} alle ${fmt(job.guideCheckedAt)}`
+          : 'Ricontrollo della guida prima della cattura'),
         job.guideChange && h('div', { class: 'rc' },
-          `Nuovo orario in guida ${captureWindow(job.guideChange.s, job.guideChange.e, job.start)}`)),
+          `Nuovo orario in guida ${captureWindow(job.guideChange.s, job.guideChange.e, job.start)} · ${job.guideChange.covered ? 'Coperto dalla cattura' : 'Fuori dalla finestra di cattura'}`)),
       recordingPlay(job, report),
+      recordingBrowserButton(job, source => pane(job.title, source, onBack => recordingPlayerView(job, onBack))),
       job.status === 'scheduled' && h('div', { class: 'recording-actions' },
         h('button', { class: 'btn', onclick: e => edit(job, e.currentTarget) }, 'Modifica'),
         job.guideChange && h('button', { class: 'btn', onclick: e => edit(job, e.currentTarget, true) }, 'Aggiorna prenotazione'),
+        state.epgRefreshEnabled && job.kind === 'guide' && action(job, job.watchGuide ? 'Disattiva ricontrollo' : 'Ricontrolla guida', watchRecording),
         action(job, job.seriesId ? 'Salta puntata' : 'Annulla', cancelRecording)),
       job.status === 'failed' && action(job, 'Rimuovi', cancelRecording),
-      job.status === 'recording' && job.stoppedAt == null && action(job, 'Ferma e salva', stopRecording),
+      job.status === 'recording' && job.stoppedAt == null && h('div', { class: 'recording-actions' },
+        action(job, '+15 min', row => extendRecording(row, 15)), action(job, '+30 min', row => extendRecording(row, 30)),
+        action(job, 'Ferma e salva', stopRecording)),
     )) : [h('div', { class: 'empty' }, query ? 'Nessun risultato.' : 'Nessuna registrazione.')]))
   }
   let lastResult
@@ -752,7 +855,11 @@ async function openDetail(chId, s) {
     h('div', { class: 'meta' }, `${ch?.lcn ? ch.lcn + ' · ' : ''}${ch?.name ?? chId} · ${fmtDay(p.s)} · ${fmt(p.s)}–${fmt(p.e)}${p.cat ? ' · ' + p.cat : ''}`),
     p.desc && h('p', {}, p.desc),
     status, timing, form,
-    h('div', { class: 'acts' }, live, record, series, recordingPlay(p.recording, text => { status.textContent = text }), ics, close)))
+    h('div', { class: 'acts' }, live, record, series, recordingPlay(p.recording, text => { status.textContent = text }),
+      recordingBrowserButton(p.recording, () => {
+        const back = () => openDetail(chId, s)
+        sheet.replaceChildren(h('div', { class: 'sh' }, h('h2', {}, p.recording.title), recordingPlayerView(p.recording, back)))
+      }), ics, close)))
   sheet.showModal()
 }
 sheet.addEventListener('click', e => { if (e.target === sheet) sheet.close() })
@@ -797,6 +904,7 @@ async function loadGuideData(options) {
   state.nowData = nowData
   state.recordingEnabled = health.recordingEnabled
   state.epgRefreshEnabled = health.epgRefreshEnabled
+  state.browserPlayer = health.browserPlayer
   $('#recordings').hidden = !state.recordingEnabled
   return health
 }

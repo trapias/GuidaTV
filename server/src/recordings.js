@@ -12,7 +12,8 @@ import { encodeMovieMetadata, movieMetadata, moviePoster } from './vsmeta.js'
 const MIN_FREE = 1024 ** 3
 const RETRY_MS = 60000
 const ARCHIVE_CACHE_MS = 10000
-const archivedName = row => row.partial ? row.filename.replace(/(\.(?:mp4|ts))$/, ' - parziale$1') : row.filename
+const GUIDE_CHECK_LEAD = 15 * 60000
+export const archivedName = row => row.partial ? row.filename.replace(/(\.(?:mp4|ts))$/, ' - parziale$1') : row.filename
 const earlyStopReason = (row, at) => at < row.end ? 'Fermata prima della fine prevista del programma' : null
 
 function archiveName(title, channel, start, id) {
@@ -63,6 +64,7 @@ export class Recordings {
       stoppedAt: 'INTEGER', uploadAfter: 'INTEGER NOT NULL DEFAULT 0',
       kind: "TEXT NOT NULL DEFAULT 'guide'", subtitle: 'TEXT', episode: 'TEXT', seriesId: 'TEXT',
       durationMs: 'INTEGER', bytes: 'INTEGER', outcomeAt: 'INTEGER', movieMetadata: 'TEXT',
+      watchGuide: 'INTEGER NOT NULL DEFAULT 0', guideCheckedAt: 'INTEGER',
     }
     for (const [name, type] of Object.entries(additions)) {
       if (!columns.includes(name)) this.db.exec(`ALTER TABLE recordings ADD COLUMN ${name} ${type}`)
@@ -108,6 +110,34 @@ export class Recordings {
 
   change(row, now = Date.now()) {
     return guideChange(row, this.store?.channels?.get(row.channel)?.programmes, now)
+  }
+
+  review(row, now = Date.now()) {
+    const change = this.change(row, now)
+    return change && { ...change, covered: change.s >= row.captureFrom && change.e <= row.captureTo }
+  }
+
+  watchGuide(id, enabled, now = Date.now()) {
+    return this.db.prepare(`
+      UPDATE recordings SET watchGuide = ?, guideCheckedAt = CASE WHEN watchGuide = ? THEN guideCheckedAt ELSE NULL END
+      WHERE id = ? AND status = 'scheduled' AND kind = 'guide' AND captureFrom > ?
+      RETURNING *
+    `).get(Number(enabled), Number(enabled), id, enabled ? now + GUIDE_CHECK_LEAD : now) || null
+  }
+
+  pendingGuideChecks(now = Date.now()) {
+    return this.db.prepare(`
+      SELECT id, start, captureFrom FROM recordings WHERE status = 'scheduled' AND watchGuide = 1 AND guideCheckedAt IS NULL
+      AND captureFrom BETWEEN ? AND ?
+    `).all(now + GUIDE_CHECK_LEAD, now + 90 * 60000)
+  }
+
+  markGuideChecked(jobs, at) {
+    const update = this.db.prepare(`
+      UPDATE recordings SET guideCheckedAt = ? WHERE id = ? AND start = ? AND captureFrom = ?
+      AND status = 'scheduled' AND watchGuide = 1
+    `)
+    for (const { id, start, captureFrom } of jobs) update.run(at, id, start, captureFrom)
   }
 
   listSeries() {
@@ -208,7 +238,7 @@ export class Recordings {
 
   move(row, programme, { before, after }, now) {
     return this.db.prepare(`
-      UPDATE recordings SET start = ?, end = ?, title = ?, captureFrom = ?, captureTo = ?, filename = ?
+      UPDATE recordings SET start = ?, end = ?, title = ?, captureFrom = ?, captureTo = ?, filename = ?, guideCheckedAt = NULL
       WHERE id = ? AND status = 'scheduled' AND end > ? AND NOT EXISTS (
         SELECT 1 FROM recordings r WHERE r.channel = recordings.channel AND r.start = ? AND r.id <> recordings.id
       ) RETURNING *
@@ -244,6 +274,20 @@ export class Recordings {
     if (!this.active.get(id)?.stop(null, at)) return false
     this.db.prepare('UPDATE recordings SET stoppedAt = ? WHERE id = ?').run(at, id)
     return true
+  }
+
+  extendCapture(id, previousEnd, minutes, confirm, now = Date.now()) {
+    const row = this.getById(id)
+    const capture = this.active.get(id)
+    if (!capture || row?.status !== 'recording' || row.stoppedAt != null || row.captureTo <= now ||
+      row.captureTo !== previousEnd) return {}
+    const until = row.captureTo + minutes * 60000
+    if (until - row.captureFrom > 25 * 3600000) return { tooLong: true }
+    const conflicts = this.conflicts({ s: row.captureTo, e: until }, { before: 0, after: 0 }, { now, excludeId: row.id })
+    if (conflicts.length && confirm !== conflicts.map(job => job.id).sort().join(',')) return { conflicts }
+    if (!capture.extend(until)) return {}
+    const updated = this.db.prepare('UPDATE recordings SET captureTo = ? WHERE id = ? RETURNING *').get(until, id)
+    return { updated }
   }
 
   update(id, status, error = null, partial = 0) {
@@ -381,7 +425,7 @@ export class Recordings {
 
   captureResolved(row, source) {
     this.update(row.id, 'recording')
-    const { stop, done } = captureDynamic(row, source, this.partsDirectory(row.id))
+    const { stop, done, extend } = captureDynamic(row, source, this.partsDirectory(row.id))
     const settled = done.catch(error => {
       this.log.error('Cattura registrazione:', error.message)
       return { reason: 'Cattura interrotta' }
@@ -397,7 +441,7 @@ export class Recordings {
       this.update(row.id, 'waiting', reason, reason ? 1 : 0)
     }).catch(error => this.log.error('Chiusura registrazione:', error.message))
       .finally(() => this.active.delete(row.id))
-    this.active.set(row.id, { stop, done: settled })
+    this.active.set(row.id, { stop, done: settled, extend })
   }
 
   capture(row, stream) {
@@ -406,7 +450,7 @@ export class Recordings {
     this.update(row.id, 'recording', reason)
     const ff = spawn('ffmpeg', [...streamInputArgs(stream), '-y', path], { stdio: 'ignore' })
     let stoppedAt
-    let killTimer
+    let killTimer, timer
     const stop = (error, at) => {
       if (killTimer || ff.exitCode !== null || ff.signalCode !== null || !ff.kill('SIGINT')) return false
       if (error) reason = error
@@ -414,7 +458,14 @@ export class Recordings {
       killTimer = setTimeout(() => ff.kill('SIGKILL'), 5000)
       return true
     }
-    const timer = setTimeout(() => stop(), Math.max(0, row.captureTo - Date.now()))
+    const extend = until => {
+      if (killTimer || ff.exitCode !== null || ff.signalCode !== null) return false
+      row.captureTo = until
+      clearTimeout(timer)
+      timer = setTimeout(stop, Math.max(0, until - Date.now()))
+      return true
+    }
+    extend(row.captureTo)
     ff.on('error', () => { reason = 'Impossibile avviare FFmpeg' })
     const done = new Promise(resolve => ff.once('close', resolve)).then(async code => {
       clearTimeout(timer)
@@ -433,7 +484,7 @@ export class Recordings {
       }
     }).catch(err => this.log.error('Chiusura registrazione:', err.message))
       .finally(() => this.active.delete(row.id))
-    this.active.set(row.id, { stop, done })
+    this.active.set(row.id, { stop, done, extend })
   }
 
   async publish(row) {

@@ -1,6 +1,8 @@
-import { execFile } from 'node:child_process'
-import { stat } from 'node:fs/promises'
+import { execFile, spawn } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
+import { stat, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 
 const exec = promisify(execFile)
@@ -19,6 +21,8 @@ export class SmbArchive {
     const [, host, folder] = /^\/\/([^/]+)\/([^/]+)$/.exec(share) || []
     this.localHost = host
     this.folder = folder
+    this.readHost = ip || host
+    this.credentials = credentials
     this.tailscaleHost = tailscaleHost
   }
 
@@ -61,6 +65,31 @@ export class SmbArchive {
     } catch (err) {
       if (/NT_STATUS_(?:OBJECT_NAME_NOT_FOUND|NO_SUCH_FILE)/.test(err.stdout + err.stderr)) return null
       throw err
+    }
+  }
+
+  read(filename, start, length, signal) {
+    const script = fileURLToPath(new URL('./smb-read.py', import.meta.url))
+    const host = this.readHost.replace(/^\[|\]$/g, '')
+    return spawn('python3', [script, this.credentials, host, this.folder, filename, start, length],
+      { signal, stdio: ['ignore', 'pipe', 'ignore'] })
+  }
+
+  async checkWrite(directory, signal) {
+    const local = `guidatv-check-${randomUUID()}.tmp`
+    const staged = `${local}.part`
+    const path = join(directory, local)
+    await writeFile(path, 'GuidaTV\n', { flag: 'wx', mode: 0o600 })
+    try {
+      await this.command(`put "${local}" "${staged}"`, directory, signal, 8000)
+      await this.command(`rename "${staged}" "${local}"`, directory, signal, 8000)
+      if (await this.fileSize(directory, local, signal) !== 8) throw new Error('File di prova non verificato')
+      await this.command(`del "${local}"`, directory, signal, 8000)
+    } catch (error) {
+      await Promise.allSettled([local, staged].map(name => this.command(`del "${name}"`, directory, undefined, 5000)))
+      throw error
+    } finally {
+      await unlink(path).catch(() => {})
     }
   }
 

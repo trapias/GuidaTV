@@ -1,6 +1,6 @@
 import { createServer } from 'node:http'
 import { spawn } from 'node:child_process'
-import { readFile } from 'node:fs/promises'
+import { readFile, statfs } from 'node:fs/promises'
 import { extname, join, normalize } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -9,6 +9,7 @@ import { loadLcn } from './lcn.js'
 import { loadPlaylist, matchStreams, singleM3u } from './streams.js'
 import { streamInputArgs } from './ffmpeg.js'
 import { Recordings } from './recordings.js'
+import { playerSession, recordingMedia } from './recording-player.js'
 import { SmbArchive } from './smb.js'
 import { resolveTv8 } from './tv8.js'
 import { raiChannels, resolveRai } from './rai.js'
@@ -48,6 +49,14 @@ const recordings = recordingShare && new Recordings({
   sources: recordingSources,
   videoStationMetadata: process.env.RECORDINGS_VSMETA === '1',
 })
+let playback
+if (recordings && process.env.RECORDINGS_BROWSER === '1') {
+  try {
+    const password = (await readFile(process.env.RECORDINGS_BROWSER_PASSWORD_FILE || '/run/guidatv/browser.password', 'utf8')).trim()
+    if (password.length < 16) throw new Error('password troppo corta')
+    playback = playerSession(password)
+  } catch { console.warn('Player disattivato: browser.password deve essere leggibile e contenere almeno 16 caratteri') }
+}
 
 // Stream con audio/video su tracce HLS separate (Mediaset): VLC li desincronizza, quindi li uniamo
 // in un unico MPEG-TS senza ricodificare (-c copy). Un ffmpeg per spettatore, chiuso alla disconnessione.
@@ -93,25 +102,66 @@ function sameOrigin(req) {
     (!req.headers['sec-fetch-site'] || req.headers['sec-fetch-site'] === 'same-origin')
 }
 
+const media = playback && recordingMedia(recordings, playback.authenticated, json)
+function playerApi(req, res) {
+  if (!playback) return json(res, { error: 'Player disattivato' }, 404, 'no-store')
+  if (req.method === 'GET') return json(res, { authenticated: playback.authenticated(req) }, 200, 'no-store')
+  if (req.method !== 'POST') return json(res, { error: 'Metodo non consentito' }, 405, 'no-store')
+  if (!sameOrigin(req)) return json(res, { error: 'Richiesta da un’altra origine' }, 403, 'no-store')
+  const { status, cookie } = playback.login(req)
+  if (!cookie) return json(res, { error: status === 429 ? 'Troppi tentativi. Attendi un minuto.' : 'Password errata' }, status, 'no-store')
+  res.setHeader('Set-Cookie', cookie)
+  return json(res, { authenticated: true }, 200, 'no-store')
+}
+
+let nasCheck, nasCheckResult
+async function setupApi(req, res) {
+  if (!['GET', 'POST'].includes(req.method)) return json(res, { error: 'Metodo non consentito' }, 405, 'no-store')
+  if (req.method === 'POST' && !sameOrigin(req)) return json(res, { error: 'Richiesta da un’altra origine' }, 403, 'no-store')
+  if (req.method === 'POST' && recordings && (!nasCheckResult || Date.now() - nasCheckResult.at > 15000)) {
+    nasCheck ||= recordings.archive.checkWrite(recordings.directory, recordings.abort.signal)
+      .then(() => { nasCheckResult = { ok: true, at: Date.now() } })
+      .catch(() => { nasCheckResult = { ok: false, at: Date.now() } })
+      .finally(() => { nasCheck = null })
+    await nasCheck
+  }
+  const disk = recordings && await statfs(recordings.directory).catch(() => null)
+  const channels = recordings ? store.listChannels().filter(ch => recordings.source(ch.id)).map(({ name, lcn }) => ({ name, lcn })) : []
+  const { ok, lastError, loadedAt, channels: guideChannels } = store.health()
+  return json(res, {
+    guide: { ok: ok && !lastError, loadedAt, channels: guideChannels, refreshEnabled: Boolean(EPG_REFRESH_URL) },
+    recording: Boolean(recordings), nas: nasCheckResult ?? null, freeBytes: disk ? disk.bavail * disk.bsize : null,
+    player: Boolean(playback), playerConfigured: process.env.RECORDINGS_BROWSER === '1', channels,
+  }, 200, 'no-store')
+}
+
 let epgRefresh = { status: 'idle' }
+let pendingRefresh
 function epgRefreshApi(req, res) {
   if (!EPG_REFRESH_URL) return json(res, { error: 'Aggiornamento manuale della guida non configurato' }, 404)
   if (req.method === 'GET') return json(res, epgRefresh, 200, 'no-store')
   if (req.method !== 'POST') return json(res, { error: 'Metodo non consentito' }, 405)
   if (!sameOrigin(req)) return json(res, { error: 'Richiesta da un’altra origine' }, 403)
-  if (epgRefresh.status !== 'running') {
+  startGuideRefresh()
+  return json(res, epgRefresh, 202, 'no-store')
+}
+
+function startGuideRefresh() {
+  if (!pendingRefresh) {
     const startedAt = Date.now()
     epgRefresh = { status: 'running', startedAt }
-    requestEpgRefresh(progress => {
+    pendingRefresh = requestEpgRefresh(progress => {
       epgRefresh = { status: 'running', startedAt, progress }
     }).then(updated => {
       epgRefresh = { status: 'complete', updated, startedAt }
+      return true
     }).catch(error => {
       console.warn('Aggiornamento manuale EPG:', error.message)
       epgRefresh = { status: 'error', startedAt, error: 'Aggiornamento della guida non riuscito. Rimane disponibile l’ultima guida valida.' }
-    })
+      return false
+    }).finally(() => { pendingRefresh = null })
   }
-  return json(res, epgRefresh, 202, 'no-store')
+  return pendingRefresh
 }
 
 async function requestEpgRefresh(onProgress) {
@@ -142,10 +192,16 @@ async function recordingApi(q, res, req) {
   if (!recordings) return json(res, { error: 'Registrazioni disattivate' }, 404)
   if (req.method === 'GET' || req.method === 'HEAD') {
     if (q.get('view') === 'series') return json(res, recordings.listSeries(), 200, 'no-store')
-    if (q.get('view') === 'outcomes') return json(res, recordings.outcomes(), 200, 'no-store')
+    if (q.get('view') === 'outcomes') {
+      const alerts = recordings.list().flatMap(row => {
+        const review = row.watchGuide && recordings.review(row)
+        return review && !review.covered ? [{ id: `guide:${row.id}:${review.s}:${review.e}` }] : []
+      })
+      return json(res, [...alerts, ...recordings.outcomes()], 200, 'no-store')
+    }
     const rows = await recordings.visible(recordings.list(), req.headers.host, req.socket.remoteAddress)
     return json(res, rows.map(publicRecording).map(row =>
-      row.status === 'scheduled' ? { ...row, guideChange: recordings.change(row) } : row), 200, 'no-store')
+      row.status === 'scheduled' ? { ...row, guideChange: recordings.review(row) } : row), 200, 'no-store')
   }
   if (!['POST', 'PATCH', 'DELETE'].includes(req.method)) return json(res, { error: 'Metodo non consentito' }, 405)
   if (!sameOrigin(req)) {
@@ -160,6 +216,23 @@ async function recordingApi(q, res, req) {
   if (req.method === 'POST' && q.get('action') === 'stop') {
     return recordings.finish(q.get('id') || '') ? json(res, { ok: true }, 202) :
       json(res, { error: 'La registrazione non è in corso' }, 409)
+  }
+  if (req.method === 'POST' && q.get('action') === 'extend') {
+    const minutes = Number(q.get('minutes'))
+    if (![15, 30].includes(minutes)) return json(res, { error: 'Scegli 15 o 30 minuti' }, 400)
+    const { updated, conflicts, tooLong } = recordings.extendCapture(q.get('id'), num(q.get('until'), 0), minutes, q.get('confirm'))
+    if (conflicts) return json(res, { error: 'Le registrazioni si sovrappongono', conflicts, limit: recordings.limit }, 409, 'no-store')
+    if (tooLong) return json(res, { error: 'La cattura può durare al massimo 25 ore' }, 409)
+    return updated ? json(res, publicRecording(updated), 200, 'no-store') :
+      json(res, { error: 'La registrazione è cambiata o sta terminando. Controlla l’orario aggiornato.' }, 409)
+  }
+  if (req.method === 'PATCH' && q.get('action') === 'watch') {
+    if (!EPG_REFRESH_URL || !['0', '1'].includes(q.get('enabled'))) {
+      return json(res, { error: 'Controllo del palinsesto non disponibile' }, 400)
+    }
+    const updated = recordings.watchGuide(q.get('id'), q.get('enabled') === '1')
+    return updated ? json(res, publicRecording(updated), 200, 'no-store') :
+      json(res, { error: 'Attiva il ricontrollo quando mancano almeno 15 minuti all’inizio della cattura' }, 409)
   }
   const editing = req.method === 'PATCH'
   const scheduled = editing ? recordings.getById(q.get('id') || '') : null
@@ -241,7 +314,8 @@ async function recordingApi(q, res, req) {
 async function api(url, res, req) {
   const q = url.searchParams
   switch (url.pathname) {
-    case '/api/health': return json(res, { ...store.health(), recordingEnabled: Boolean(recordings), epgRefreshEnabled: Boolean(EPG_REFRESH_URL) })
+    case '/api/health': return json(res, { ...store.health(), recordingEnabled: Boolean(recordings),
+      epgRefreshEnabled: Boolean(EPG_REFRESH_URL), browserPlayer: Boolean(playback) })
     case '/api/channels': return json(res, store.listChannels().map(channel => ({
       ...channel, recordable: Boolean(recordings && recordings.source(channel.id)),
     })))
@@ -299,7 +373,11 @@ const server = createServer(async (req, res) => {
     const url = new URL(req.url, 'http://x')
     if (url.pathname === '/api/recordings') return await recordingApi(url.searchParams, res, req)
     if (url.pathname === '/api/epg/refresh') return epgRefreshApi(req, res)
+    if (url.pathname === '/api/setup') return await setupApi(req, res)
+    if (url.pathname === '/api/recordings/player') return playerApi(req, res)
     if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(405); return res.end() }
+    if (url.pathname === '/api/recordings/media') return media ? await media(url.searchParams.get('id'), req, res) :
+      json(res, { error: 'Player disattivato' }, 404, 'no-store')
     if (url.pathname.startsWith('/api/')) {
       const m = /^\/api\/live\/([^/]+)\.ts$/.exec(url.pathname)
       if (m) return liveMux(decodeURIComponent(m[1]), req, res)
@@ -338,8 +416,22 @@ const loop = async () => {
   setTimeout(loop, (store.channels.size ? REFRESH_MIN : 1) * 60000)
 }
 loop()
+let nextGuideCheck = 0
+const guideWatchTimer = recordings && EPG_REFRESH_URL && setInterval(async () => {
+  const now = Date.now()
+  if (now < nextGuideCheck) return
+  const jobs = recordings.pendingGuideChecks(now)
+  if (!jobs.length) return
+  nextGuideCheck = now + 30 * 60000
+  try {
+    if (await startGuideRefresh() && !shuttingDown) recordings.markGuideChecked(jobs, Date.now())
+  } catch (error) {
+    if (!shuttingDown) console.warn('Controllo delle prenotazioni:', error.message)
+  }
+}, 60000)
 async function shutdown() {
   shuttingDown = true
+  clearInterval(guideWatchTimer)
   server.close()
   if (recordings) await recordings.stop()
   process.exit(0)

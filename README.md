@@ -53,6 +53,8 @@ In **Cinema**, **Serie TV** e **News** la guida mostra i programmi corrispondent
 
 Usa **Aggiorna guida** in **Impostazioni** o **Registrazioni** per riscaricare i palinsesti. L’operazione può richiedere qualche minuto. Se l’EPG pubblica un nuovo orario per una registrazione, GuidaTV propone **Aggiorna prenotazione**.
 
+Per una prenotazione importante, attiva **Ricontrolla guida** in **Registrazioni**. GuidaTV chiede un aggiornamento quando mancano tra 90 e 15 minuti all’inizio della cattura. Nella prenotazione indica se il nuovo orario è coperto dai margini e segnala nel contatore un eventuale orario fuori dalla finestra di cattura. Puoi confermare la modifica con **Aggiorna prenotazione**.
+
 `epg/superguidatv.it.config.js` sostituisce lo scraper upstream, rotto dopo la riscrittura del sito.
 
 ## Numero di canale (LCN) e visione in diretta
@@ -89,11 +91,19 @@ Imposta `RECORDINGS_VSMETA=1` per salvare i metadati dei film nel formato di Syn
 
 Le registrazioni salvate restano visibili finché il file è nella condivisione. GuidaTV verifica il NAS mentre la finestra è aperta. Una cancellazione o uno spostamento si riflette alla verifica successiva. La finestra mostra prima le registrazioni in corso, in attesa o programmate e permette di cercare per titolo o canale, con 10 risultati per pagina. Le registrazioni fallite restano visibili finché vengono rimosse dalla finestra.
 
+Durante la cattura, **+15 min** e **+30 min** spostano l’orario di fine. GuidaTV chiede conferma se l’estensione supera il limite di registrazioni contemporanee. Puoi terminare prima con **Ferma e salva**.
+
 **Riproduci** usa il player configurato in ⚙. Su Mac, la playlist M3U delle registrazioni apre per impostazione predefinita il file nella condivisione montata dal Finder sotto `/Volumes`. Monta la condivisione prima della riproduzione. In ⚙ puoi indicare un altro percorso del volume o scegliere **Indirizzo SMB** per tornare al collegamento diretto.
 
 Il collegamento diretto usa l'host di `GUIDATV_SMB_SHARE` su LAN. Via Tailscale imposta `GUIDATV_SMB_TAILSCALE_HOST` all'indirizzo Tailscale o al nome MagicDNS del NAS. Il dispositivo che riproduce deve poter accedere alla condivisione SMB e VLC può chiedere le credenziali del NAS.
 
 Per abilitare le registrazioni, imposta `GUIDATV_SMB_SHARE`, ad esempio `//nas.local/TV`. Se Docker non risolve il nome del NAS, imposta anche `GUIDATV_SMB_IP` al suo indirizzo LAN. Crea `~/.config/guidatv/smb.credentials` (permessi `600`) con le righe `username=nome_utente` e `password=…`. L'utente SMB deve poter leggere, creare e rinominare file nella condivisione. Usa `GUIDATV_SMB_DIR` per scegliere un'altra directory di credenziali.
+
+In **Impostazioni → Verifica configurazione** trovi l’ultimo caricamento della guida, i canali registrabili e lo spazio locale. **Prova scrittura sul NAS** crea, rinomina, verifica e rimuove un piccolo file temporaneo.
+
+### Player nel browser
+
+Per attivare **Nel browser** per i file MP4, imposta `RECORDINGS_BROWSER=1` e crea un file `browser.password` accanto a `smb.credentials`, leggibile dal container, con una sola riga di almeno 16 caratteri. Con la configurazione standard, `(umask 077 && openssl rand -hex 24 > ~/.config/guidatv/browser.password)` genera una password casuale. Riavvia il servizio web e usa quella password nella finestra del player. Per l'accesso fuori casa usa un indirizzo HTTPS o la tua rete Tailscale. GuidaTV legge i segmenti richiesti dal NAS per permettere la ricerca nel video. La compatibilità audio e video dipende dai codec supportati dal browser.
 
 ## Sviluppo
 `cd server && npm install && npm test`
