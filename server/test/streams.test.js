@@ -2,6 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { parseM3u, matchStreams, singleM3u } from '../src/streams.js'
 import { loadLcn } from '../src/lcn.js'
+import { raiLiveStream, raiRelinker } from '../src/rai.js'
 
 const M3U = `#EXTM3U
 #EXTINF:-1 tvg-id="Rai1.it@HD" http-user-agent="UA/1",Rai 1 HD (1080p)
@@ -17,6 +18,20 @@ https://a/la7d.m3u8
 https://a/x.m3u8
 #EXTINF:-1,Senza url
 `
+
+test('la sorgente Rai usa il relinker ufficiale e accetta solo HLS live firmati senza licenza DRM', () => {
+  const source = 'https://mediapolis.rai.it/relinker/relinkerServlet.htm?cont=42'
+  assert.equal(raiRelinker(source).href, source + '&output=64')
+  assert.equal(raiRelinker(source.replace('mediapolis.rai.it', 'mediapolis.rai.it.example.test')), null)
+  const url = 'https://raiuno1-live.akamaized.net/hls/live/test/playlist.m3u8?hdnea=signature'
+  const xml = `<Mediapolis><url type="content"><![CDATA[${url}]]></url>
+    <is_live>Y</is_live><license_url><![CDATA[{}]]></license_url></Mediapolis>`
+  assert.deepEqual(raiLiveStream(xml), { url, hls: true })
+  assert.equal(raiLiveStream(xml.replace('?hdnea=signature', '')), null)
+  assert.equal(raiLiveStream(xml.replace('{}', '{"widevine":"licenza"}')), null)
+  assert.equal(raiLiveStream(xml.replace('>Y<', '>N<')), null)
+  assert.equal(raiLiveStream(xml.replace('raiuno1-live.akamaized.net', 'example.test')), null)
+})
 
 test('parseM3u legge attributi, opzioni VLC e scarta voci senza URL', () => {
   const e = parseM3u(M3U)

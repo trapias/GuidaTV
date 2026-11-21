@@ -34,7 +34,7 @@ In **Cinema**, **Serie TV** e **News** la guida mostra i programmi corrispondent
 - Il pulsante ▶ compare solo per i canali con uno stream. Gli stream si danno al server con una playlist M3U
   (`/data/streams.m3u`, oppure `STREAMS_M3U=<url o file>` nel compose; ricaricata ogni ~6 h). Le voci sono associate ai canali
   per `tvg-id`/nome; a parità vince la prima. Il compose usa `streams/official.m3u`: solo stream ufficiali in chiaro
-  (Mediaset, TV2000, Warner Bros. Discovery). Rai e La7 sono esclusi (i server rifiutano i player generici).
+  (Mediaset, TV2000, Warner Bros. Discovery). Per Rai, La7 e TV8, il pulsante della diretta apre il sito o l'app ufficiale.
   Le voci con `mux="1"` (Mediaset: audio e video su tracce HLS separate, che VLC desincronizza) passano da `ffmpeg -c copy`
   nel container (`/api/live/<id>.ts`, max `MAX_MUX`=4 contemporanei). Mediaset è geo-limitato all'Italia.
 - Il player è per-dispositivo (⚙ in alto): **.m3u** (il browser scarica un file che il sistema apre con VLC, funziona ovunque),
@@ -47,6 +47,10 @@ Dalla scheda di un programma su un canale con stream diretto, **Registra** apre 
 **Registra la serie** prenota le prossime trasmissioni con lo stesso titolo sullo stesso canale agli aggiornamenti della guida. Usa **Salta puntata** per escludere una trasmissione oppure **Serie seguite** per fermare le nuove prenotazioni automatiche. Se la guida fornisce stagione ed episodio, GuidaTV li usa per riconoscere le repliche. Le nuove prenotazioni automatiche usano i margini predefiniti e rispettano il limite simultaneo durante la cattura.
 
 **Aggiorna prenotazione** appare quando il palinsesto propone un nuovo orario con una corrispondenza univoca entro tre ore. I margini si possono rivedere prima della conferma. **Registra per orario** permette di scegliere direttamente un canale con stream registrabile, inizio e fine, anche quando il programma manca dalla guida. La durata massima è 24 ore.
+
+Per abilitare le registrazioni sperimentali di TV8, imposta `RECORDINGS_TV8=1` nel file `.env` con un NAS configurato. GuidaTV richiede al player ufficiale un indirizzo valido all'avvio e a ogni riconnessione. Le interruzioni durante il programma possono lasciare dei salti nel video e una registrazione parziale. Il pulsante della diretta apre il sito ufficiale.
+
+Con `RECORDINGS_RAI=1` puoi registrare Rai 1, Rai 2, Rai 3, Rai 4, Rai 5, Rai Movie, Rai Premium, Rai Gulp, Rai Yoyo, Rai Storia, Rai News 24, Rai Sport e Italiana. GuidaTV richiede al servizio di RaiPlay un nuovo indirizzo a ogni tentativo e rispetta la disponibilità geografica e gli eventuali oscuramenti del flusso. Il pulsante della diretta apre RaiPlay.
 
 In **Registrazioni** puoi vedere l'orario di cattura previsto, annullare le prenotazioni future e usare **Ferma e salva** sulle registrazioni in corso per trasferire al NAS quanto già acquisito. Se fermi una cattura prima dell'orario di fine del programma indicato in guida, la registrazione è contrassegnata come parziale.
 

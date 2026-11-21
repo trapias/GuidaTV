@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Recordings } from '../src/recordings.js'
@@ -306,6 +306,37 @@ test('il palinsesto lascia intatti orari manuali e corrispondenze ambigue', asyn
     queue.update(manual.id, 'failed', 'Nessun video')
     assert.deepEqual(queue.outcomes(now).map(outcome => outcome.id), [manual.id])
     assert.equal(queue.outcomes(now + 31 * 86400000).length, 0)
+  } finally {
+    await queue.stop()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('una sorgente di registrazione può affiancare il sito ufficiale e recuperare più parti dopo il riavvio', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'guidatv-dynamic-'))
+  const website = { url: 'https://www.tv8.it/streaming', web: true }
+  const source = { async resolve() { throw new Error('Non usato nel recupero') } }
+  const store = { streams: new Map([['tv8', website], ['la7', website]]) }
+  const queue = new Recordings({ directory, store, before: 0, after: 0, sources: new Map([['tv8', source]]) })
+  try {
+    assert.equal(queue.source('tv8'), source)
+    assert.equal(queue.source('la7'), undefined)
+    assert.equal(store.streams.get('tv8'), website)
+    const start = Date.now() - 1000
+    const job = queue.add('tv8', 'TV8', { t: 'Prova', s: start, e: start + 60000 })
+    queue.update(job.id, 'recording')
+    const parts = queue.partsDirectory(job.id)
+    await mkdir(parts)
+    await writeFile(join(parts, '10.ts'), 'secondo')
+    await writeFile(join(parts, '2.ts'), 'primo')
+    await writeFile(join(parts, '1.ts'), '')
+    queue.tick = () => {}
+    await queue.start()
+    const result = queue.getById(job.id)
+    assert.equal(result.status, 'waiting')
+    assert.equal(result.partial, 1)
+    assert.equal(result.bytes, 'primosecondo'.length)
+    assert.deepEqual((await queue.captureFiles(job.id)).map(file => file.path), [join(parts, '2.ts'), join(parts, '10.ts')])
   } finally {
     await queue.stop()
     await rm(directory, { recursive: true, force: true })

@@ -1,8 +1,8 @@
 #EXTM3U
 # Solo stream ufficiali in chiaro, dai CDN degli editori (Mediaset, TV2000, Warner Bros. Discovery).
 # mux="1": audio e video su tracce separate, uniti dal server in un solo flusso (VLC li desincronizza).
-# web="1": nessun flusso diretto (Rai, La7, TV8 rifiutano i player generici o usano player protetti): il pulsante apre la
-# pagina ufficiale (su iPhone i link raiplay.it/dirette/* si aprono nell'app RaiPlay).
+# web="1": il pulsante della diretta apre la pagina ufficiale.
+# Su iPhone i link raiplay.it/dirette/* possono aprire l'app RaiPlay.
 #EXTINF:-1 tvg-id="rete4" mux="1",Rete 4
 https://live02-seg.msf.cdn.mediaset.net/live/ch-r4/r4-clr.isml/index.m3u8
 #EXTINF:-1 tvg-id="canale5" mux="1",Canale 5
@@ -69,6 +69,8 @@ https://www.raiplay.it/dirette/rainews24
 https://www.raiplay.it/dirette/raisport
 #EXTINF:-1 tvg-id="raiscuola" web="1",Rai Scuola
 https://www.raiplay.it/dirette/raiscuola
+#EXTINF:-1 tvg-id="italiana" web="1",Italiana
+https://www.raiplay.it/dirette/italiana
 #EXTINF:-1 tvg-id="la7" web="1",La7
 https://www.la7play.it/dirette/la7
 #EXTINF:-1 tvg-id="tv8" web="1",TV8

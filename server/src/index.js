@@ -9,6 +9,8 @@ import { loadPlaylist, matchStreams, singleM3u } from './streams.js'
 import { streamInputArgs } from './ffmpeg.js'
 import { Recordings } from './recordings.js'
 import { SmbArchive } from './smb.js'
+import { resolveTv8 } from './tv8.js'
+import { raiChannels, resolveRai } from './rai.js'
 
 const PORT = Number(process.env.PORT || 8080)
 const EPG_URL = process.env.EPG_URL || 'http://epg:3000/guide.xml'
@@ -19,6 +21,11 @@ const PUBLIC_DIR = process.env.PUBLIC_DIR || fileURLToPath(new URL('../public', 
 const STREAMS_SOURCE = process.env.STREAMS_M3U || '' // URL o file; default /data/streams.m3u
 const store = new Store({ epgUrl: EPG_URL, dataDir: DATA_DIR, lcn: await loadLcn(DATA_DIR) })
 const recordingShare = process.env.RECORDINGS_SMB
+const recordingSources = new Map()
+if (process.env.RECORDINGS_TV8 === '1') recordingSources.set('tv8', { resolve: resolveTv8 })
+if (process.env.RECORDINGS_RAI === '1') {
+  for (const channel of raiChannels) recordingSources.set(channel, { resolve: signal => resolveRai(channel, signal) })
+}
 const validPadding = value => /^\d+$/.test(value ?? '') && Number(value) <= 60
 const padding = (value, fallback) => {
   const minutes = Number(value ?? fallback)
@@ -36,6 +43,7 @@ const recordings = recordingShare && new Recordings({
   before: padding(process.env.RECORDINGS_BEFORE_MIN, 2),
   after: padding(process.env.RECORDINGS_AFTER_MIN, 10),
   limit: /^[1-8]$/.test(process.env.RECORDINGS_MAX_CONCURRENT) ? Number(process.env.RECORDINGS_MAX_CONCURRENT) : 2,
+  sources: recordingSources,
 })
 
 // Stream con audio/video su tracce HLS separate (Mediaset): VLC li desincronizza, quindi li uniamo
@@ -141,9 +149,8 @@ async function recordingApi(q, res, req) {
     programme = store.programme(id, start)
   }
   if (!programme) return json(res, { error: 'Programma non trovato' }, 404)
-  if (!scheduled) {
-    const stream = store.streams.get(id)
-    if (!stream || stream.web) return json(res, { error: 'Il canale non ha uno stream registrabile' }, 409)
+  if (!scheduled && (!store.channels.has(id) || !recordings.source(id))) {
+    return json(res, { error: 'Il canale non ha uno stream registrabile' }, 409)
   }
   if (followSeries) {
     const rule = recordings.follow(id, store.channels.get(id).name, programme.t)
@@ -182,7 +189,9 @@ async function api(url, res, req) {
   const q = url.searchParams
   switch (url.pathname) {
     case '/api/health': return json(res, { ...store.health(), recordingEnabled: Boolean(recordings) })
-    case '/api/channels': return json(res, store.listChannels())
+    case '/api/channels': return json(res, store.listChannels().map(channel => ({
+      ...channel, recordable: Boolean(recordings && recordings.source(channel.id)),
+    })))
     case '/api/live': return json(res, { error: 'usa /api/live/<id>.ts' }, 404)
     case '/api/stream': { // per i player con schema URL personalizzato
       const s = store.streams.get(q.get('c'))

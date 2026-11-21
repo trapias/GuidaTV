@@ -607,7 +607,7 @@ async function openDetail(chId, s) {
   const status = h('div', { class: 'meta', role: 'status' }, p.recording && recordingStatus(p.recording))
   const capture = p.recording && recordingTime(p.recording)
   const timing = h('div', { class: 'meta', hidden: !capture }, capture)
-  const series = p.recordingMargins && ch?.live && !ch.web && h('button', {
+  const series = p.recordingMargins && ch?.recordable && h('button', {
     class: 'btn', disabled: p.followingSeries, onclick: async e => {
       const button = e.currentTarget
       button.disabled = true
@@ -622,7 +622,7 @@ async function openDetail(chId, s) {
     },
   }, p.followingSeries ? 'Serie seguita' : 'Registra la serie')
   let form, record
-  if (p.recordingMargins && ch?.live && !ch.web && p.e > Date.now() && !p.recording) {
+  if (p.recordingMargins && ch?.recordable && p.e > Date.now() && !p.recording) {
     record = h('button', { class: 'btn', onclick: () => {
       record.hidden = true
       form.hidden = false
@@ -695,7 +695,7 @@ async function init() {
   try {
     const [channels, nowData, health] = await Promise.all([api('channels'), api('now'), api('health')])
     state.channels = channels.filter(c => c.n > 0).sort(byTelecomando)
-    state.recordableChannels = channels.filter(ch => ch.live && !ch.web).sort(byTelecomando)
+    state.recordableChannels = channels.filter(ch => ch.recordable).sort(byTelecomando)
     state.byId = new Map(state.channels.map(c => [c.id, c]))
     state.nowData = nowData
     state.recordingEnabled = health.recordingEnabled

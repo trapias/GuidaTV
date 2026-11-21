@@ -1,20 +1,18 @@
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
-import { rename, stat, statfs, unlink } from 'node:fs/promises'
+import { readdir, rename, rm, statfs, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { mediaDuration, remuxMp4, streamInputArgs } from './ffmpeg.js'
 import { guideChange, titleKey } from './recording-guide.js'
+import { captureDynamic, fileSize } from './recording-capture.js'
 
 const MIN_FREE = 1024 ** 3
 const RETRY_MS = 60000
 const ARCHIVE_CACHE_MS = 10000
 const archivedName = row => row.partial ? row.filename.replace(/(\.(?:mp4|ts))$/, ' - parziale$1') : row.filename
 const earlyStopReason = (row, at) => at < row.end ? 'Fermata prima della fine prevista del programma' : null
-const fileSize = async path => {
-  try { return (await stat(path)).size } catch (err) { if (err.code === 'ENOENT') return 0; throw err }
-}
 
 function archiveName(title, channel, start, id) {
   const part = value => Array.from(value.replace(/[^\p{L}\p{N}() -]+/gu, ' ').trim().replace(/ +/g, ' ')).slice(0, 42).join('')
@@ -25,13 +23,14 @@ function archiveName(title, channel, start, id) {
 }
 
 export class Recordings {
-  constructor({ directory, store, archive, before, after, limit = 2, log = console }) {
+  constructor({ directory, store, archive, before, after, limit = 2, sources = new Map(), log = console }) {
     this.directory = directory
     this.store = store
     this.archive = archive
     this.before = before
     this.after = after
     this.limit = limit
+    this.sources = sources
     this.log = log
     this.active = new Map()
     this.abort = new AbortController()
@@ -70,6 +69,11 @@ export class Recordings {
 
   list() {
     return this.db.prepare('SELECT * FROM recordings ORDER BY start DESC').all()
+  }
+
+  source(channel) {
+    const stream = this.store.streams?.get(channel)
+    return stream && !stream.web ? stream : this.sources.get(channel)
   }
 
   async visible(rows, requestHost, remoteAddress) {
@@ -126,8 +130,7 @@ export class Recordings {
   syncSeries(now = Date.now()) {
     for (const rule of this.listSeries()) {
       const channel = this.store.channels?.get(rule.channel)
-      const stream = this.store.streams.get(rule.channel)
-      if (!channel || !stream || stream.web) continue
+      if (!channel || !this.source(rule.channel)) continue
       const jobs = this.db.prepare("SELECT * FROM recordings WHERE channel = ? AND kind = 'guide'").all(rule.channel)
         .filter(job => titleKey(job.title) === rule.titleKey)
       const skips = this.db.prepare('SELECT start, episode FROM series_skips WHERE ruleId = ?').all(rule.id)
@@ -254,17 +257,41 @@ export class Recordings {
 
   localName(id) { return `${id}.ts` }
 
+  partsDirectory(id) { return join(this.directory, `${id}.parts`) }
+
+  async captureFiles(id) {
+    const directory = this.partsDirectory(id)
+    const parts = await readdir(directory).catch(error => {
+      if (error.code === 'ENOENT') return []
+      throw error
+    })
+    const paths = [join(this.directory, this.localName(id)), ...parts.filter(name => /^\d+\.ts$/.test(name))
+      .sort((a, b) => parseInt(a, 10) - parseInt(b, 10)).map(name => join(directory, name))]
+    const files = await Promise.all(paths.map(async path => ({ path, bytes: await fileSize(path) })))
+    return files.filter(file => file.bytes > 0)
+  }
+
+  async measureCapture(id, files) {
+    if (files.length === 1) return this.measure(id, files[0].path, files[0].bytes)
+    this.db.prepare('UPDATE recordings SET bytes = ? WHERE id = ?').run(files.reduce((sum, file) => sum + file.bytes, 0), id)
+  }
+
+  async cleanCapture(id) {
+    await this.clean(join(this.directory, this.localName(id)))
+    await rm(this.partsDirectory(id), { recursive: true, force: true })
+      .catch(error => this.log.warn('Pulizia parti registrazione:', error.message))
+  }
+
   async start() {
     for (const row of this.list()) {
-      const path = join(this.directory, this.localName(row.id))
       if (row.status === 'saved') {
-        await this.clean(path)
+        await this.cleanCapture(row.id)
         await this.clean(join(this.directory, `${row.id}.mp4`))
       }
       if (row.status !== 'recording') continue
-      const bytes = await fileSize(path)
-      if (bytes) {
-        await this.measure(row.id, path, bytes)
+      const files = await this.captureFiles(row.id)
+      if (files.length) {
+        await this.measureCapture(row.id, files)
         const reason = row.stoppedAt == null ? 'Registrazione interrotta dal riavvio' : row.error || earlyStopReason(row, row.stoppedAt)
         this.update(row.id, 'waiting', reason, reason ? 1 : 0)
       } else if (row.stoppedAt != null) this.update(row.id, 'failed', 'Nessun video ricevuto')
@@ -295,8 +322,11 @@ export class Recordings {
         this.update(row.id, 'failed', 'Il programma è terminato prima dell’avvio')
         continue
       }
-      const stream = this.store.streams.get(row.channel)
-      if (!diskFull && stream && !stream.web && this.active.size < this.limit) this.capture(row, stream)
+      const stream = this.source(row.channel)
+      if (!diskFull && stream && this.active.size < this.limit) {
+        if (stream.resolve) this.captureResolved(row, stream)
+        else this.capture(row, stream)
+      }
     }
 
     if (this.upload) return
@@ -311,6 +341,27 @@ export class Recordings {
       })
         .finally(() => { this.upload = null })
     }
+  }
+
+  captureResolved(row, source) {
+    this.update(row.id, 'recording')
+    const { stop, done } = captureDynamic(row, source, this.partsDirectory(row.id))
+    const settled = done.catch(error => {
+      this.log.error('Cattura registrazione:', error.message)
+      return { reason: 'Cattura interrotta' }
+    }).then(async ({ stoppedAt, reason, failure }) => {
+      const files = await this.captureFiles(row.id)
+      if (!files.length) {
+        this.update(row.id, 'failed', failure || reason || 'Nessun video ricevuto')
+        await this.cleanCapture(row.id)
+        return
+      }
+      if (stoppedAt != null) reason ||= earlyStopReason(row, stoppedAt)
+      await this.measureCapture(row.id, files)
+      this.update(row.id, 'waiting', reason, reason ? 1 : 0)
+    }).catch(error => this.log.error('Chiusura registrazione:', error.message))
+      .finally(() => this.active.delete(row.id))
+    this.active.set(row.id, { stop, done: settled })
   }
 
   capture(row, stream) {
@@ -350,11 +401,11 @@ export class Recordings {
   }
 
   async publish(row) {
-    const capture = join(this.directory, this.localName(row.id))
     const localName = `${row.id}.mp4`
     const mp4 = join(this.directory, localName)
     if (!await fileSize(mp4)) {
-      const size = await fileSize(capture)
+      const files = await this.captureFiles(row.id)
+      const size = files.reduce((sum, file) => sum + file.bytes, 0)
       if (!size) return this.update(row.id, 'failed', 'Il file locale è assente o vuoto')
       const space = await statfs(this.directory)
       if (space.bavail * space.bsize < MIN_FREE + size) {
@@ -362,7 +413,7 @@ export class Recordings {
       }
       const temporary = `${mp4}.part`
       try {
-        await remuxMp4(capture, temporary, this.abort.signal)
+        await remuxMp4(files.map(file => file.path), temporary, this.abort.signal)
         if (!await fileSize(temporary)) throw new Error('File MP4 vuoto')
         await rename(temporary, mp4)
       } catch (err) {
@@ -386,7 +437,7 @@ export class Recordings {
     this.archiveFiles?.add(filename.toLowerCase())
     if (this.archiveCheck === check) this.archiveCheck = null
     this.update(row.id, 'saved', row.partial ? row.error : null, row.partial)
-    await this.clean(capture)
+    await this.cleanCapture(row.id)
     await this.clean(mp4)
   }
 
