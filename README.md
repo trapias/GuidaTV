@@ -2,8 +2,33 @@
 
 Guida TV dei canali italiani, in locale. Raggiungibile da LAN e Tailscale.
 
+[English overview](#english-overview)
+
 - **epg**: basato su `ghcr.io/iptv-org/epg` — scarica i palinsesti (Rai, Mediaset, Sky, Superguida) e genera `guide.xml` (XMLTV). Aggiornamento all'avvio e alle 04:00 e 14:00.
 - **web**: Node (senza framework) — legge l'XMLTV, lo tiene in memoria, espone `/api/*` e serve la SPA (vanilla JS, nessuna build). Conserva l'ultima guida valida in un volume.
+
+## Schermate
+
+### Desktop
+
+![Griglia oraria della Guida TV su desktop](docs/screenshots/desktop-grid.png)
+
+<details>
+<summary>Vista Adesso e scheda del programma</summary>
+
+![Programmi in onda nella vista Adesso su desktop](docs/screenshots/desktop-now.png)
+
+![Scheda delle qualifiche del GP del Portogallo su desktop](docs/screenshots/desktop-programme.png)
+
+</details>
+
+### iPhone
+
+<p>
+  <a href="docs/screenshots/iphone-now.jpg"><img src="docs/screenshots/iphone-now.jpg" width="220" alt="Programmi in onda nella vista Adesso su iPhone"></a>
+  <a href="docs/screenshots/iphone-grid.jpg"><img src="docs/screenshots/iphone-grid.jpg" width="220" alt="Griglia oraria della Guida TV su iPhone"></a>
+  <a href="docs/screenshots/iphone-programme.jpg"><img src="docs/screenshots/iphone-programme.jpg" width="220" alt="Scheda delle qualifiche del GP del Portogallo su iPhone"></a>
+</p>
 
 ## Uso
 ```
@@ -66,3 +91,11 @@ Per abilitare le registrazioni, imposta `GUIDATV_SMB_SHARE`, ad esempio `//nas.l
 
 ## Sviluppo
 `cd server && npm install && npm test`
+
+## English overview
+
+Guida TV is a self-hosted TV guide built for Italian television. It fetches Italian programme listings, offers a live schedule grid and search, and can record supported channels to an SMB NAS. The interface is in Italian.
+
+To adapt it for another country, supply an XMLTV guide, local channel mappings and compatible streams in an M3U playlist. The bundled channels and recording integrations are specific to Italian broadcasters. Live streams may be subject to regional availability and programme restrictions.
+
+[Installation and configuration (Italian)](#uso)
