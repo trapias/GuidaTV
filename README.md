@@ -85,13 +85,15 @@ In **Registrazioni** puoi vedere l'orario di cattura previsto, annullare le pren
 
 Il margine predefinito è di 2 minuti prima e 10 dopo. Per modificarlo, imposta `RECORDINGS_BEFORE_MIN` e `RECORDINGS_AFTER_MIN` nel file `.env` accanto a `docker-compose.yml` e applica la configurazione con `docker compose up -d --no-deps web`. I valori sono minuti interi da 0 a 60. Per aggiornare i margini di una prenotazione già in coda, usa **Modifica** in **Registrazioni**. GuidaTV mostra i nuovi orari di cattura e verifica le sovrapposizioni prima del salvataggio.
 
+In **Impostazioni → Profili margini** puoi salvare le preferenze di **Film** e **Sport in diretta** per quel browser. Scegli un profilo nel modulo della registrazione e ritocca i due margini per la singola prenotazione.
+
 Il servizio cattura in MPEG-TS in `/data/recordings`. Al termine, salva audio e video in MP4 senza ricodificarli e trasferisce il file alla condivisione configurata in `GUIDATV_SMB_SHARE`. Se il trasferimento fallisce, il file resta in locale e il servizio riprova dopo un minuto. Nel frattempo può trasferire le altre registrazioni. La finestra mostra durata e dimensione quando disponibili, l'orario del prossimo ritentativo e un contatore dei nuovi esiti per browser.
 
 Imposta `RECORDINGS_VSMETA=1` per salvare i metadati dei film nel formato di Synology Video Station. GuidaTV pubblica `nome.mp4.vsmeta` accanto all'MP4, prima di rendere visibile il video. Usa i dati disponibili in guida, compresa l'immagine JPEG quando scaricabile. Per l'importazione, la cartella di destinazione deve essere indicizzata come **Film** in Video Station. I metadati e i file aggiunti in precedenza sul NAS vengono conservati.
 
-Le registrazioni salvate restano visibili finché il file è nella condivisione. GuidaTV verifica il NAS mentre la finestra è aperta. Una cancellazione o uno spostamento si riflette alla verifica successiva. La finestra mostra prima le registrazioni in corso, in attesa o programmate e permette di cercare per titolo o canale, con 10 risultati per pagina. Le registrazioni fallite restano visibili finché vengono rimosse dalla finestra.
+Le registrazioni salvate restano visibili finché il file è nella condivisione. GuidaTV verifica il NAS mentre la finestra è aperta. Una cancellazione o uno spostamento si riflette alla verifica successiva. Le sezioni **In corso**, **Programmate** e **Salvate** si possono richiudere. La ricerca per titolo o canale copre anche le registrazioni oltre le prime dieci di ogni sezione. Usa **Altre azioni** per comandi come **Ricontrolla guida** e **Annulla**. Le registrazioni fallite restano in **Da verificare** finché vengono rimosse.
 
-Durante la cattura, **+15 min** e **+30 min** spostano l’orario di fine. GuidaTV chiede conferma se l’estensione supera il limite di registrazioni contemporanee. Puoi terminare prima con **Ferma e salva**.
+Durante la cattura, **Altre azioni → +15 min** o **+30 min** sposta l’orario di fine. GuidaTV chiede conferma se l’estensione supera il limite di registrazioni contemporanee. Puoi terminare prima con **Ferma e salva**.
 
 **Riproduci** usa il player configurato in ⚙. Su Mac, la playlist M3U delle registrazioni apre per impostazione predefinita il file nella condivisione montata dal Finder sotto `/Volumes`. Monta la condivisione prima della riproduzione. In ⚙ puoi indicare un altro percorso del volume o scegliere **Indirizzo SMB** per tornare al collegamento diretto.
 
@@ -104,6 +106,8 @@ In **Impostazioni → Verifica configurazione** trovi l’ultimo caricamento del
 ### Player nel browser
 
 Per attivare **Nel browser** per i file MP4, imposta `RECORDINGS_BROWSER=1` e crea un file `browser.password` accanto a `smb.credentials`, leggibile dal container, con la password su una sola riga. Con la configurazione standard, `(umask 077 && openssl rand -hex 24 > ~/.config/guidatv/browser.password)` genera una password casuale. Riavvia il servizio web e usa quella password nella finestra del player. Per l'accesso fuori casa usa un indirizzo HTTPS o la tua rete Tailscale. GuidaTV legge i segmenti richiesti dal NAS per permettere la ricerca nel video. La compatibilità audio e video dipende dai codec supportati dal browser.
+
+Il player salva il punto di visione in quel browser. Quando riapri un video, puoi scegliere **Riprendi**. **Vai all’inizio previsto** salta il margine iniziale della registrazione. Il punto è stimato dagli orari della guida e di cattura.
 
 ## Sviluppo
 `cd server && npm install && npm test`

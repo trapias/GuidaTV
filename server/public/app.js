@@ -158,10 +158,41 @@ function openSettings() {
     h('p', {}, 'Questa scelta vale per le dirette e le registrazioni su questo dispositivo.'),
     h('label', { class: 'frow' }, 'Come aprire lo stream', mode), row, sourceRow, folderRow,
     h('div', { class: 'acts' }, save, h('button', { class: 'btn', onclick: () => sheet.close() }, 'Annulla')),
-    guideRefresh, h('button', { class: 'btn', onclick: openSetup }, 'Verifica configurazione')))
+    guideRefresh, h('div', { class: 'recording-tools' },
+      state.recordingEnabled && h('button', { class: 'btn', onclick: openRecordingProfiles }, 'Profili margini'),
+      h('button', { class: 'btn', onclick: openSetup }, 'Verifica configurazione'))))
   sheet.showModal()
 }
 $('#settings').addEventListener('click', openSettings)
+
+const recordingProfiles = [
+  { id: 'film', label: 'Film', before: 2, after: 5 },
+  { id: 'sport', label: 'Sport in diretta', before: 15, after: 30 },
+]
+const savedRecordingProfiles = () => store.get('recordingProfiles', {})
+const marginInput = value => h('input', { type: 'number', min: '0', max: '60', step: '1', required: true, value })
+const marginFields = (before, after) => h('div', { class: 'recording-margins' },
+  h('label', { class: 'frow' }, 'Minuti prima', before), h('label', { class: 'frow' }, 'Minuti dopo', after))
+
+function openRecordingProfiles() {
+  const saved = savedRecordingProfiles()
+  const fields = recordingProfiles.map(profile => ({
+    ...profile, before: marginInput(saved[profile.id]?.before ?? profile.before),
+    after: marginInput(saved[profile.id]?.after ?? profile.after),
+  }))
+  const form = h('form', { onsubmit: event => {
+    event.preventDefault()
+    store.set('recordingProfiles', Object.fromEntries(fields.map(({ id, before, after }) =>
+      [id, { before: before.valueAsNumber, after: after.valueAsNumber }])))
+    openSettings()
+  } }, fields.map(({ label, before, after }) =>
+    h('fieldset', { class: 'recording-profile' }, h('legend', {}, label), marginFields(before, after))),
+  h('div', { class: 'acts' }, h('button', { class: 'btn', type: 'button', onclick: openSettings }, 'Indietro'),
+    h('button', { class: 'btn pri', type: 'submit' }, 'Salva profili')))
+  sheet.replaceChildren(h('div', { class: 'sh' }, h('h2', {}, 'Profili margini'),
+    h('p', {}, 'Scegli un profilo nel modulo di prenotazione. Le preferenze si salvano in questo browser.'), form))
+  fields[0].before.focus()
+}
 
 function openSetup() {
   const status = h('div', { class: 'meta', role: 'status' }, 'Controllo configurazione…')
@@ -483,12 +514,59 @@ function recordingBrowserButton(job, onOpen) {
     h('button', { class: 'btn', onclick: e => onOpen(e.currentTarget) }, '▶ Nel browser')
 }
 
+function playbackTime(seconds) {
+  const minutes = Math.floor(seconds / 60)
+  const clock = [minutes % 60, seconds % 60].map(value => String(value).padStart(2, '0')).join(':')
+  return minutes < 60 ? clock : `${Math.floor(minutes / 60)}:${clock}`
+}
+
 function recordingPlayerView(job, onBack) {
   const feedback = h('p', { class: 'meta', role: 'status' }, 'Verifico l’accesso al player…')
   const password = h('input', { type: 'password', required: true, autocomplete: 'current-password' })
   const video = h('video', { class: 'recording-video', controls: true, playsinline: true, preload: 'metadata', hidden: true,
     onerror: () => { if (video.hasAttribute('src')) feedback.textContent = 'Video non disponibile o formato audio/video non supportato dal browser.' } })
-  const stop = () => { video.removeAttribute('src'); video.load() }
+  const resumeAt = store.get('playbackPositions', {})[job.id]
+  const expectedStart = Math.round((job.start - job.captureFrom) / 1000)
+  const resume = h('button', { class: 'btn pri', hidden: true, onclick: () => {
+    video.currentTime = resumeAt
+    video.play().catch(() => {})
+  } }, Number.isInteger(resumeAt) ? `Riprendi da ${playbackTime(resumeAt)}` : 'Riprendi')
+  const jump = h('button', { class: 'btn', hidden: true, title: 'Punto stimato dai margini di cattura',
+    onclick: () => { video.currentTime = expectedStart; resume.hidden = true } }, 'Vai all’inizio previsto')
+  const shortcuts = h('div', { class: 'recording-tools' }, resume, jump)
+  let touched = false
+  let lastSavedAt = 0
+  function savePosition() {
+    if (!touched || !Number.isFinite(video.duration)) return
+    lastSavedAt = Date.now()
+    const position = Math.floor(video.currentTime)
+    const positions = store.get('playbackPositions', {})
+    delete positions[job.id]
+    if (position >= 5 && position < video.duration - 5) positions[job.id] = position
+    store.set('playbackPositions', Object.fromEntries(Object.entries(positions).slice(-100)))
+  }
+  video.addEventListener('loadedmetadata', () => {
+    resume.hidden = !Number.isInteger(resumeAt) || resumeAt < 5 || resumeAt >= video.duration - 5
+    jump.hidden = job.kind === 'manual' || !(expectedStart > 0 && expectedStart < video.duration) ||
+      Boolean(job.error?.includes('avviata dopo l’inizio'))
+  })
+  video.addEventListener('play', () => { touched = true; resume.hidden = true })
+  video.addEventListener('timeupdate', () => { if (Date.now() - lastSavedAt >= 10000) savePosition() })
+  video.addEventListener('seeked', () => {
+    if (video.currentTime > 0) touched = true
+    if (touched) resume.hidden = true
+    savePosition()
+  })
+  video.addEventListener('pause', savePosition)
+  video.addEventListener('ended', savePosition)
+  window.addEventListener('pagehide', savePosition)
+  const stop = () => {
+    window.removeEventListener('pagehide', savePosition)
+    savePosition()
+    touched = false
+    video.removeAttribute('src')
+    video.load()
+  }
   function showVideo() {
     if (!video.isConnected || !sheet.open) return
     form.hidden = true
@@ -515,14 +593,19 @@ function recordingPlayerView(job, onBack) {
       if (password.isConnected) password.focus()
     }
   }).catch(error => { feedback.textContent = error.message })
-  return [feedback, video, form, h('div', { class: 'acts' }, h('button', { class: 'btn', onclick: () => {
+  return [feedback, video, shortcuts, form, h('div', { class: 'acts' }, h('button', { class: 'btn', onclick: () => {
     sheet.removeEventListener('close', stop)
     stop()
     onBack()
   } }, 'Indietro'))]
 }
-const recordingOrder = { recording: 0, waiting: 1, scheduled: 2, saved: 3, failed: 3 }
-const RECORDINGS_PER_PAGE = 10
+const recordingSections = [
+  { id: 'active', title: 'In corso', statuses: ['recording', 'waiting'] },
+  { id: 'scheduled', title: 'Programmate', statuses: ['scheduled'] },
+  { id: 'saved', title: 'Salvate', statuses: ['saved'] },
+  { id: 'failed', title: 'Da verificare', statuses: ['failed'] },
+]
+const RECORDINGS_PER_SECTION = 10
 let recordingTimer
 let recordingDialogOpen = false
 let badgeRequest
@@ -541,23 +624,16 @@ function openRecordings() {
   const list = h('div', { class: 'results recording-list' }, 'Caricamento…')
   const message = h('div', { class: 'meta', role: 'status', hidden: true })
   const report = text => { message.textContent = text; message.hidden = !text }
-  let jobs
-  let page = 0
+  let jobs = []
   let pending
+  const displayed = new Map()
+  const sectionOpen = new Map()
+  let previousQuery = ''
   const search = h('input', {
     class: 'recording-search', type: 'search', placeholder: 'Cerca titolo o canale',
     'aria-label': 'Cerca titolo o canale', hidden: true,
-    oninput: () => { page = 0; draw() },
+    oninput: () => { displayed.clear(); list.scrollTop = 0; draw() },
   })
-  const previous = h('button', { class: 'btn', onclick: () => changePage(-1) }, 'Precedente')
-  const next = h('button', { class: 'btn', onclick: () => changePage(1) }, 'Successiva')
-  const pageLabel = h('span', { class: 'meta', 'aria-live': 'polite' })
-  const pages = h('div', { class: 'recording-pages', hidden: true }, previous, pageLabel, next)
-  function changePage(direction) {
-    page += direction
-    draw()
-    list.scrollTop = 0
-  }
   function action(job, label, request) {
     return h('button', { class: 'btn', onclick: async e => {
       const button = e.currentTarget
@@ -627,19 +703,33 @@ function openRecordings() {
       return [results, feedback, h('div', { class: 'acts' }, h('button', { class: 'btn', onclick: closeEditor }, 'Indietro'))]
     })
   }
-  function draw() {
-    const query = search.value.trim().toLowerCase()
-    const matches = jobs.filter(job => `${job.title} ${job.channelName}`.toLowerCase().includes(query))
-    const pageCount = Math.max(1, Math.ceil(matches.length / RECORDINGS_PER_PAGE))
-    page = Math.min(page, pageCount - 1)
-    pages.hidden = pageCount === 1
-    previous.disabled = page === 0
-    next.disabled = page + 1 === pageCount
-    pageLabel.textContent = `${page + 1} / ${pageCount}`
-    search.hidden = jobs.length === 0 && !search.value
-
-    const rows = matches.slice(page * RECORDINGS_PER_PAGE, (page + 1) * RECORDINGS_PER_PAGE)
-    list.replaceChildren(...(rows.length ? rows.map(job => h('div', { class: 'res' },
+  function recordingRow(job, open) {
+    const external = recordingPlay(job, report)
+    const browser = recordingBrowserButton(job, source => pane(job.title, source, onBack => recordingPlayerView(job, onBack)))
+    let primary = browser || external
+    const secondary = []
+    if (browser && external) secondary.push(external)
+    if (job.status === 'scheduled') {
+      primary = h('button', { class: 'btn', onclick: e => edit(job, e.currentTarget) }, 'Modifica')
+      if (job.guideChange) {
+        const update = h('button', { class: 'btn', onclick: e => edit(job, e.currentTarget, true) }, 'Aggiorna prenotazione')
+        if (job.guideChange.covered) secondary.push(update)
+        else { secondary.push(primary); primary = update }
+      }
+      if (state.epgRefreshEnabled && job.kind === 'guide') {
+        secondary.push(action(job, job.watchGuide ? 'Disattiva ricontrollo' : 'Ricontrolla guida', watchRecording))
+      }
+      secondary.push(action(job, job.seriesId ? 'Salta puntata' : 'Annulla', cancelRecording))
+    }
+    if (job.status === 'failed') primary = action(job, 'Rimuovi', cancelRecording)
+    if (job.status === 'recording' && job.stoppedAt == null) {
+      primary = action(job, 'Ferma e salva', stopRecording)
+      secondary.push(action(job, '+15 min', row => extendRecording(row, 15)), action(job, '+30 min', row => extendRecording(row, 30)))
+    }
+    const menu = secondary.length > 0 && h('details', { class: 'recording-menu', open, 'data-recording': job.id },
+      h('summary', { class: 'btn', 'aria-label': `Altre azioni per ${job.title}` }, 'Altre azioni'),
+      h('div', { class: 'recording-menu-items' }, secondary))
+    return h('div', { class: 'res' },
       h('div', { class: 'rm' },
         h('div', { class: 'rn' }, job.title),
         h('div', { class: 'rc' }, `${job.channelName} · ${fmtDay(job.start)} · ${fmt(job.start)}–${fmt(job.end)}`),
@@ -651,18 +741,35 @@ function openRecordings() {
           : 'Ricontrollo della guida prima della cattura'),
         job.guideChange && h('div', { class: 'rc' },
           `Nuovo orario in guida ${captureWindow(job.guideChange.s, job.guideChange.e, job.start)} · ${job.guideChange.covered ? 'Coperto dalla cattura' : 'Fuori dalla finestra di cattura'}`)),
-      recordingPlay(job, report),
-      recordingBrowserButton(job, source => pane(job.title, source, onBack => recordingPlayerView(job, onBack))),
-      job.status === 'scheduled' && h('div', { class: 'recording-actions' },
-        h('button', { class: 'btn', onclick: e => edit(job, e.currentTarget) }, 'Modifica'),
-        job.guideChange && h('button', { class: 'btn', onclick: e => edit(job, e.currentTarget, true) }, 'Aggiorna prenotazione'),
-        state.epgRefreshEnabled && job.kind === 'guide' && action(job, job.watchGuide ? 'Disattiva ricontrollo' : 'Ricontrolla guida', watchRecording),
-        action(job, job.seriesId ? 'Salta puntata' : 'Annulla', cancelRecording)),
-      job.status === 'failed' && action(job, 'Rimuovi', cancelRecording),
-      job.status === 'recording' && job.stoppedAt == null && h('div', { class: 'recording-actions' },
-        action(job, '+15 min', row => extendRecording(row, 15)), action(job, '+30 min', row => extendRecording(row, 30)),
-        action(job, 'Ferma e salva', stopRecording)),
-    )) : [h('div', { class: 'empty' }, query ? 'Nessun risultato.' : 'Nessuna registrazione.')]))
+      (primary || menu) && h('div', { class: 'recording-actions' }, primary, menu))
+  }
+  function draw() {
+    const query = search.value.trim().toLowerCase()
+    const matches = jobs.filter(job => `${job.title} ${job.channelName}`.toLowerCase().includes(query))
+    const openMenus = new Set([...list.querySelectorAll('[data-recording][open]')].map(menu => menu.dataset.recording))
+    if (!previousQuery) {
+      for (const section of list.querySelectorAll('[data-section]')) sectionOpen.set(section.dataset.section, section.open)
+    }
+    previousQuery = query
+    search.hidden = jobs.length === 0 && !search.value
+    if (!matches.length) return list.replaceChildren(h('div', { class: 'empty' }, query ? 'Nessun risultato.' : 'Nessuna registrazione.'))
+    list.replaceChildren(...recordingSections.flatMap(({ id, title, statuses }) => {
+      const section = matches.filter(job => statuses.includes(job.status)).sort((a, b) => {
+        if (id === 'scheduled') return a.start - b.start
+        return Number(a.status === 'waiting') - Number(b.status === 'waiting') || b.start - a.start
+      })
+      if (!section.length) return []
+      const limit = displayed.get(id) || RECORDINGS_PER_SECTION
+      const rows = section.slice(0, limit).map(job => recordingRow(job, openMenus.has(job.id)))
+      const more = section.length > limit && h('button', { class: 'btn', onclick: () => {
+        displayed.set(id, limit + RECORDINGS_PER_SECTION)
+        draw()
+        list.querySelector(`[data-section="${id}"] .res:nth-child(${limit + 1})`)?.scrollIntoView({ block: 'nearest' })
+      } }, 'Mostra altre')
+      return [h('details', { class: 'recording-section', 'data-section': id, open: Boolean(query) || sectionOpen.get(id) !== false },
+        h('summary', {}, title, h('span', { class: 'meta' }, String(section.length))),
+        h('div', { class: 'results' }, rows, more))]
+    }))
   }
   let lastResult
   const load = () => pending ||= api('recordings').then(result => {
@@ -671,24 +778,22 @@ function openRecordings() {
     if (snapshot === lastResult) return
     lastResult = snapshot
     search.disabled = false
-    jobs = result.sort((a, b) => recordingOrder[a.status] - recordingOrder[b.status] ||
-      (a.status === 'scheduled' ? a.start - b.start : b.start - a.start))
+    jobs = result
     draw()
   }).catch(() => {
     if (list.isConnected && sheet.open) {
       lastResult = undefined
       search.disabled = true
-      pages.hidden = true
       list.textContent = 'Registrazioni non disponibili.'
     }
   }).finally(() => { pending = null })
   const close = h('button', { class: 'btn', autofocus: true, onclick: () => sheet.close() }, 'Chiudi')
+  const guideRefresh = state.epgRefreshEnabled && guideRefreshControl(() => Promise.resolve(pending).then(load))
   const tools = h('div', { class: 'recording-tools' },
     h('button', { class: 'btn', onclick: e => pane('Registra per orario', e.currentTarget, onCancel =>
       manualRecordingForm({ onCancel, onSaved: saved(onCancel) })) }, 'Registra per orario'),
-    h('button', { class: 'btn', onclick: e => openSeries(e.currentTarget) }, 'Serie seguite'))
-  const guideRefresh = state.epgRefreshEnabled && guideRefreshControl(() => Promise.resolve(pending).then(load))
-  const panel = h('div', { class: 'sh recordings-sheet' }, h('h2', {}, 'Registrazioni'), tools, guideRefresh, search, list, pages, message,
+    h('button', { class: 'btn', onclick: e => openSeries(e.currentTarget) }, 'Serie seguite'), guideRefresh)
+  const panel = h('div', { class: 'sh recordings-sheet' }, h('h2', {}, 'Registrazioni'), tools, search, list, message,
     h('div', { class: 'acts' }, close))
   sheet.replaceChildren(panel)
   sheet.showModal()
@@ -708,13 +813,22 @@ function recordingForm({
   programme, margins, params, method = 'POST', label = 'Programma registrazione', confirmLabel = 'Programma comunque',
   onCancel, onSaved,
 }) {
-  const input = name => h('input', { type: 'number', name, min: '0', max: '60', step: '1', required: true, value: margins[name] })
-  const before = input('before')
-  const after = input('after')
+  const before = marginInput(margins.before)
+  const after = marginInput(margins.after)
+  const saved = savedRecordingProfiles()
+  const preset = h('select', { oninput: () => {
+    const profile = recordingProfiles.find(option => option.id === preset.value)
+    const values = profile ? saved[profile.id] || profile : margins
+    before.value = values.before
+    after.value = values.after
+  } },
+    h('option', { value: '' }, method === 'PATCH' ? 'Margini attuali' : 'Predefiniti del server'),
+    recordingProfiles.map(({ id, label }) => h('option', { value: id }, label)),
+    h('option', { value: 'custom', disabled: true }, 'Personalizzati'))
+  for (const input of [before, after]) input.addEventListener('input', () => { preset.value = 'custom' })
   return bookingForm({
-    controls: [before, after], method, label, confirmLabel, onCancel, onSaved,
-    fields: h('div', { class: 'recording-margins' }, h('label', { class: 'frow' }, 'Minuti prima', before),
-      h('label', { class: 'frow' }, 'Minuti dopo', after)),
+    controls: [preset, before, after], method, label, confirmLabel, onCancel, onSaved,
+    fields: [h('label', { class: 'frow' }, 'Profilo margini', preset), marginFields(before, after)],
     values: () => ({
       params: { ...params, before: before.valueAsNumber, after: after.valueAsNumber },
       from: programme.s - before.valueAsNumber * 60000, to: programme.e + after.valueAsNumber * 60000,
