@@ -1,12 +1,13 @@
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
-import { readdir, rename, rm, statfs, unlink } from 'node:fs/promises'
+import { readdir, rename, rm, statfs, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { mediaDuration, remuxMp4, streamInputArgs } from './ffmpeg.js'
 import { guideChange, titleKey } from './recording-guide.js'
 import { captureDynamic, fileSize } from './recording-capture.js'
+import { encodeMovieMetadata, movieMetadata, moviePoster } from './vsmeta.js'
 
 const MIN_FREE = 1024 ** 3
 const RETRY_MS = 60000
@@ -23,7 +24,7 @@ function archiveName(title, channel, start, id) {
 }
 
 export class Recordings {
-  constructor({ directory, store, archive, before, after, limit = 2, sources = new Map(), log = console }) {
+  constructor({ directory, store, archive, before, after, limit = 2, sources = new Map(), videoStationMetadata = false, log = console }) {
     this.directory = directory
     this.store = store
     this.archive = archive
@@ -31,6 +32,7 @@ export class Recordings {
     this.after = after
     this.limit = limit
     this.sources = sources
+    this.videoStationMetadata = videoStationMetadata
     this.log = log
     this.active = new Map()
     this.abort = new AbortController()
@@ -60,7 +62,7 @@ export class Recordings {
     const additions = {
       stoppedAt: 'INTEGER', uploadAfter: 'INTEGER NOT NULL DEFAULT 0',
       kind: "TEXT NOT NULL DEFAULT 'guide'", subtitle: 'TEXT', episode: 'TEXT', seriesId: 'TEXT',
-      durationMs: 'INTEGER', bytes: 'INTEGER', outcomeAt: 'INTEGER',
+      durationMs: 'INTEGER', bytes: 'INTEGER', outcomeAt: 'INTEGER', movieMetadata: 'TEXT',
     }
     for (const [name, type] of Object.entries(additions)) {
       if (!columns.includes(name)) this.db.exec(`ALTER TABLE recordings ADD COLUMN ${name} ${type}`)
@@ -184,13 +186,15 @@ export class Recordings {
 
   add(channel, name, programme, { before = this.before, after = this.after, kind = 'guide', seriesId = null } = {}) {
     const id = randomUUID()
+    const metadata = kind === 'guide' && movieMetadata(programme)
     this.db.prepare(`
       INSERT INTO recordings (id, channel, channelName, title, start, end, captureFrom, captureTo, filename, status,
-        kind, subtitle, episode, seriesId)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'scheduled', ?, ?, ?, ?)
+        kind, subtitle, episode, seriesId, movieMetadata)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'scheduled', ?, ?, ?, ?, ?)
       ON CONFLICT(channel, start) DO NOTHING
     `).run(id, channel, name, programme.t, programme.s, programme.e, programme.s - before,
-      programme.e + after, archiveName(programme.t, name, programme.s, id), kind, programme.sub || null, programme.episode || null, seriesId)
+      programme.e + after, archiveName(programme.t, name, programme.s, id), kind, programme.sub || null,
+      programme.episode || null, seriesId, metadata ? JSON.stringify(metadata) : null)
     return this.get(channel, programme.s)
   }
 
@@ -257,6 +261,36 @@ export class Recordings {
 
   localName(id) { return `${id}.ts` }
 
+  rememberMovie(row) {
+    if (row.movieMetadata || row.kind !== 'guide') return row.movieMetadata
+    const change = this.change({ ...row, status: 'scheduled' }, row.start - 1)
+    const programme = this.store?.programme?.(row.channel, change?.s ?? row.start)
+    if (!programme || titleKey(programme.t) !== titleKey(row.title)) return null
+    const info = movieMetadata(programme)
+    if (!info) return null
+    const metadata = JSON.stringify(info)
+    this.db.prepare('UPDATE recordings SET movieMetadata = ? WHERE id = ?').run(metadata, row.id)
+    return metadata
+  }
+
+  async prepareMovieSidecar(row) {
+    if (!this.videoStationMetadata) return null
+    const metadata = this.rememberMovie(row)
+    if (!metadata) return null
+    const name = `${row.id}.vsmeta`
+    const path = join(this.directory, name)
+    if (!(await fileSize(path))) {
+      const info = JSON.parse(metadata)
+      const poster = await moviePoster(info.image, this.abort.signal)
+      const temporary = `${path}.part`
+      try {
+        await writeFile(temporary, encodeMovieMetadata(info, poster))
+        await rename(temporary, path)
+      } finally { await this.clean(temporary) }
+    }
+    return name
+  }
+
   partsDirectory(id) { return join(this.directory, `${id}.parts`) }
 
   async captureFiles(id) {
@@ -287,6 +321,7 @@ export class Recordings {
       if (row.status === 'saved') {
         await this.cleanCapture(row.id)
         await this.clean(join(this.directory, `${row.id}.mp4`))
+        await this.clean(join(this.directory, `${row.id}.vsmeta`))
       }
       if (row.status !== 'recording') continue
       const files = await this.captureFiles(row.id)
@@ -324,6 +359,7 @@ export class Recordings {
       }
       const stream = this.source(row.channel)
       if (!diskFull && stream && this.active.size < this.limit) {
+        if (this.videoStationMetadata) this.rememberMovie(row)
         if (stream.resolve) this.captureResolved(row, stream)
         else this.capture(row, stream)
       }
@@ -427,7 +463,8 @@ export class Recordings {
 
     const filename = archivedName(row)
     try {
-      await this.archive.publish(this.directory, localName, filename, this.abort.signal)
+      const sidecar = await this.prepareMovieSidecar(row)
+      await this.archive.publish(this.directory, localName, filename, this.abort.signal, sidecar)
     } catch {
       return this.retryUpload(row, 'Trasferimento al NAS non riuscito, nuovo tentativo in attesa')
     }
@@ -439,6 +476,7 @@ export class Recordings {
     this.update(row.id, 'saved', row.partial ? row.error : null, row.partial)
     await this.cleanCapture(row.id)
     await this.clean(mp4)
+    await this.clean(join(this.directory, `${row.id}.vsmeta`))
   }
 
   retryUpload(row, message) {

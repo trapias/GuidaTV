@@ -91,7 +91,8 @@ export class Store {
 
   programme(id, s) {
     const p = this.channels.get(id)?.programmes.find(x => x.s === s)
-    return p ? { s: p.s, e: p.e, t: p.t, sub: p.sub, episode: p.episode, cat: p.cat, type: p.type, desc: p.desc, img: p.img } : null
+    return p ? { s: p.s, e: p.e, t: p.t, sub: p.sub, episode: p.episode, cat: p.cat, type: p.type,
+      releaseYear: p.releaseYear, desc: p.desc, img: p.img } : null
   }
 
   search(q, from, limit = 120) {

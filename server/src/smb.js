@@ -64,15 +64,33 @@ export class SmbArchive {
     }
   }
 
-  async publish(directory, localName, filename, signal) {
+  async stage(directory, localName, filename, signal, preserveExisting = false) {
     const expected = (await stat(join(directory, localName))).size
     const existing = await this.fileSize(directory, filename, signal)
-    if (existing === expected) return
+    if (existing !== null && (existing === expected || preserveExisting)) return null
     if (existing !== null) throw new Error('Il file SMB ha una dimensione diversa dalla registrazione locale')
 
-    await this.command(`put "${localName}" "${filename}.part"`, directory, signal, 7200000)
-    if (await this.fileSize(directory, `${filename}.part`, signal) !== expected) throw new Error('Trasferimento SMB incompleto')
+    const staged = `${filename}.part`
+    if (await this.fileSize(directory, staged, signal) !== expected) {
+      await this.command(`put "${localName}" "${staged}"`, directory, signal, 7200000)
+      if (await this.fileSize(directory, staged, signal) !== expected) throw new Error('Trasferimento SMB incompleto')
+    }
+    return expected
+  }
+
+  async promote(directory, filename, expected, signal) {
+    if (expected === null) return
     await this.command(`rename "${filename}.part" "${filename}"`, directory, signal)
     if (await this.fileSize(directory, filename, signal) !== expected) throw new Error('File finale SMB non verificato')
+  }
+
+  async publish(directory, localName, filename, signal, metadata) {
+    const expected = await this.stage(directory, localName, filename, signal)
+    if (metadata) {
+      const sidecar = `${filename}.vsmeta`
+      const size = await this.stage(directory, metadata, sidecar, signal, true)
+      await this.promote(directory, sidecar, size, signal)
+    }
+    await this.promote(directory, filename, expected, signal)
   }
 }

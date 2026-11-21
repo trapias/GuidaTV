@@ -51,6 +51,8 @@ L'app usa i loghi dei canali presenti in `guide.xml` e, se mancano, gli URL in `
 
 In **Cinema**, **Serie TV** e **News** la guida mostra i programmi corrispondenti di tutti i canali. **Adesso** mostra quelli in onda, **Griglia** quelli del giorno selezionato. La copertura dipende dai metadati delle emittenti e dai titoli riconoscibili dei telegiornali.
 
+Usa **Aggiorna guida** in **Impostazioni** o **Registrazioni** per riscaricare i palinsesti. L’operazione può richiedere qualche minuto. Se l’EPG pubblica un nuovo orario per una registrazione, GuidaTV propone **Aggiorna prenotazione**.
+
 `epg/superguidatv.it.config.js` sostituisce lo scraper upstream, rotto dopo la riscrittura del sito.
 
 ## Numero di canale (LCN) e visione in diretta
@@ -82,6 +84,8 @@ In **Registrazioni** puoi vedere l'orario di cattura previsto, annullare le pren
 Il margine predefinito è di 2 minuti prima e 10 dopo. Per modificarlo, imposta `RECORDINGS_BEFORE_MIN` e `RECORDINGS_AFTER_MIN` nel file `.env` accanto a `docker-compose.yml` e applica la configurazione con `docker compose up -d --no-deps web`. I valori sono minuti interi da 0 a 60. Per aggiornare i margini di una prenotazione già in coda, usa **Modifica** in **Registrazioni**. GuidaTV mostra i nuovi orari di cattura e verifica le sovrapposizioni prima del salvataggio.
 
 Il servizio cattura in MPEG-TS in `/data/recordings`. Al termine, salva audio e video in MP4 senza ricodificarli e trasferisce il file alla condivisione configurata in `GUIDATV_SMB_SHARE`. Se il trasferimento fallisce, il file resta in locale e il servizio riprova dopo un minuto. Nel frattempo può trasferire le altre registrazioni. La finestra mostra durata e dimensione quando disponibili, l'orario del prossimo ritentativo e un contatore dei nuovi esiti per browser.
+
+Imposta `RECORDINGS_VSMETA=1` per salvare i metadati dei film nel formato di Synology Video Station. GuidaTV pubblica `nome.mp4.vsmeta` accanto all'MP4, prima di rendere visibile il video. Usa i dati disponibili in guida, compresa l'immagine JPEG quando scaricabile. Per l'importazione, la cartella di destinazione deve essere indicizzata come **Film** in Video Station. I metadati e i file aggiunti in precedenza sul NAS vengono conservati.
 
 Le registrazioni salvate restano visibili finché il file è nella condivisione. GuidaTV verifica il NAS mentre la finestra è aperta. Una cancellazione o uno spostamento si riflette alla verifica successiva. La finestra mostra prima le registrazioni in corso, in attesa o programmate e permette di cercare per titolo o canale, con 10 risultati per pagina. Le registrazioni fallite restano visibili finché vengono rimosse dalla finestra.
 

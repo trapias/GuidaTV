@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Recordings } from '../src/recordings.js'
 import { SmbArchive } from '../src/smb.js'
+import { encodeMovieMetadata } from '../src/vsmeta.js'
 
 test('la coda sopravvive al riavvio e conserva il video finché il NAS non lo riceve', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'guidatv-recordings-'))
@@ -337,6 +338,57 @@ test('una sorgente di registrazione può affiancare il sito ufficiale e recupera
     assert.equal(result.partial, 1)
     assert.equal(result.bytes, 'primosecondo'.length)
     assert.deepEqual((await queue.captureFiles(job.id)).map(file => file.path), [join(parts, '2.ts'), join(parts, '10.ts')])
+  } finally {
+    await queue.stop()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('Video Station riceve il file nativo del film prima della pubblicazione dell’MP4', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'guidatv-vsmeta-'))
+  const archive = new SmbArchive({ share: '//nas.local/TV' })
+  const remote = new Map()
+  const promoted = []
+  archive.fileSize = async (_, filename) => remote.get(filename)?.length ?? null
+  archive.command = async (command, cwd) => {
+    const [, action, source, target] = /^(put|rename) "([^"]+)" "([^"]+)"$/.exec(command)
+    if (action === 'put') {
+      remote.set(target, await readFile(join(cwd, source)))
+    } else {
+      remote.set(target, remote.get(source))
+      remote.delete(source)
+      promoted.push(target)
+    }
+  }
+  const start = Date.now()
+  const film = { s: start + 60000, e: start + 3600000, t: 'Città', type: 'movie', desc: 'Trama', cat: 'Drammatico' }
+  const options = { directory, archive, store: { programme: (_, s) => s === film.s ? film : null },
+    before: 0, after: 0, videoStationMetadata: true }
+  const queue = new Recordings(options)
+  try {
+    // Simula una prenotazione esistente, creata prima della migrazione.
+    const job = queue.add('iris', 'Iris', { ...film, type: null })
+    const local = `${job.id}.mp4`
+    await writeFile(join(directory, local), 'campione MP4')
+    await queue.publish(job)
+    const sidecar = `${job.filename}.vsmeta`
+    assert.deepEqual(promoted, [sidecar, job.filename])
+    assert.equal(remote.get(sidecar).toString('hex'),
+      '0801120643697474c3a01a0643697474c3a042055472616d61520c1a0a4472616d6d617469636f')
+    assert.deepEqual(remote.get(sidecar), encodeMovieMetadata({ title: 'Città', summary: 'Trama', genre: 'Drammatico' }))
+    assert.equal(queue.getById(job.id).status, 'saved')
+    await assert.rejects(readFile(join(directory, `${job.id}.vsmeta`)), { code: 'ENOENT' })
+
+    const preserved = Buffer.from('metadati personalizzati')
+    remote.set(sidecar, preserved)
+    await writeFile(join(directory, local), 'campione MP4')
+    await writeFile(join(directory, 'prova.vsmeta'), 'metadati diversi')
+    await archive.publish(directory, local, job.filename, undefined, 'prova.vsmeta')
+    assert.deepEqual(remote.get(sidecar), preserved)
+    assert.deepEqual(promoted, [sidecar, job.filename])
+
+    const sport = queue.add('rai2', 'Rai 2', { ...film, t: 'Gara', type: 'sport' })
+    assert.equal(await queue.prepareMovieSidecar(sport), null)
   } finally {
     await queue.stop()
     await rm(directory, { recursive: true, force: true })

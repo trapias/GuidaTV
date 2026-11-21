@@ -77,12 +77,14 @@ export function parseXmltv(xml) {
     const t = text(p.title)
     if (!t || Number.isNaN(s) || Number.isNaN(e) || e <= s) continue
     const categories = (Array.isArray(p.category) ? p.category : [p.category]).map(text).filter(Boolean)
+    const releaseYear = /^((?:18|19|20|21)\d{2})(?:\d{2}(?:\d{2})?)?$/.exec(text(p.date))?.[1]
     ch.programmes.push({
       s, e, t,
       sub: text(p['sub-title']),
       episode: episodeNumber(p['episode-num']),
       cat: categories[0] || '',
       type: programmeType(ch.id, t, categories),
+      releaseYear: releaseYear ? Number(releaseYear) : null,
       desc: text(p.desc),
       img: text(p.image),
     })

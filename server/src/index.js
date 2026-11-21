@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
 import { extname, join, normalize } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { setTimeout as delay } from 'node:timers/promises'
 import { Store } from './store.js'
 import { loadLcn } from './lcn.js'
 import { loadPlaylist, matchStreams, singleM3u } from './streams.js'
@@ -14,6 +15,7 @@ import { raiChannels, resolveRai } from './rai.js'
 
 const PORT = Number(process.env.PORT || 8080)
 const EPG_URL = process.env.EPG_URL || 'http://epg:3000/guide.xml'
+const EPG_REFRESH_URL = process.env.EPG_REFRESH_URL
 const DATA_DIR = process.env.DATA_DIR || '/data'
 const REFRESH_MIN = Number(process.env.REFRESH_MIN || 20)
 const PUBLIC_DIR = process.env.PUBLIC_DIR || fileURLToPath(new URL('../public', import.meta.url))
@@ -44,6 +46,7 @@ const recordings = recordingShare && new Recordings({
   after: padding(process.env.RECORDINGS_AFTER_MIN, 10),
   limit: /^[1-8]$/.test(process.env.RECORDINGS_MAX_CONCURRENT) ? Number(process.env.RECORDINGS_MAX_CONCURRENT) : 2,
   sources: recordingSources,
+  videoStationMetadata: process.env.RECORDINGS_VSMETA === '1',
 })
 
 // Stream con audio/video su tracce HLS separate (Mediaset): VLC li desincronizza, quindi li uniamo
@@ -84,6 +87,52 @@ const json = (res, data, status = 200, cache = 'no-cache') => {
   res.end(JSON.stringify(data))
 }
 const num = (v, d) => (Number.isFinite(Number(v)) && v !== null && v !== '' ? Number(v) : d)
+function sameOrigin(req) {
+  const origin = URL.parse(req.headers.origin || '')
+  return origin && ['http:', 'https:'].includes(origin.protocol) && origin.host === req.headers.host &&
+    (!req.headers['sec-fetch-site'] || req.headers['sec-fetch-site'] === 'same-origin')
+}
+
+let epgRefresh = { status: 'idle' }
+function epgRefreshApi(req, res) {
+  if (!EPG_REFRESH_URL) return json(res, { error: 'Aggiornamento manuale della guida non configurato' }, 404)
+  if (req.method === 'GET') return json(res, epgRefresh, 200, 'no-store')
+  if (req.method !== 'POST') return json(res, { error: 'Metodo non consentito' }, 405)
+  if (!sameOrigin(req)) return json(res, { error: 'Richiesta da un’altra origine' }, 403)
+  if (epgRefresh.status !== 'running') {
+    epgRefresh = { status: 'running' }
+    requestEpgRefresh().then(updated => {
+      epgRefresh = { status: 'complete', updated }
+    }).catch(error => {
+      console.warn('Aggiornamento manuale EPG:', error.message)
+      epgRefresh = { status: 'error', error: 'Aggiornamento della guida non riuscito. Rimane disponibile l’ultima guida valida.' }
+    })
+  }
+  return json(res, epgRefresh, 202, 'no-store')
+}
+
+async function requestEpgRefresh() {
+  const deadline = AbortSignal.timeout(16 * 60000)
+  const workerRequest = async method => {
+    const signal = AbortSignal.any([deadline, AbortSignal.timeout(10000)])
+    const response = await fetch(EPG_REFRESH_URL, { method, signal })
+    if (!response.ok) throw new Error(`Servizio EPG HTTP ${response.status}`)
+    return response.json()
+  }
+  let job = await workerRequest('POST')
+  while (job.status === 'running') {
+    await delay(2000, undefined, { signal: deadline })
+    job = await workerRequest('GET')
+  }
+  if (job.status !== 'complete') throw new Error('Il servizio EPG non ha prodotto una nuova guida')
+  const updated = await reloadGuide()
+  if (store.lastError) throw new Error(store.lastError)
+  return updated
+}
+
+function publicRecording({ movieMetadata, ...row }) {
+  return row
+}
 
 async function recordingApi(q, res, req) {
   if (!recordings) return json(res, { error: 'Registrazioni disattivate' }, 404)
@@ -91,12 +140,11 @@ async function recordingApi(q, res, req) {
     if (q.get('view') === 'series') return json(res, recordings.listSeries(), 200, 'no-store')
     if (q.get('view') === 'outcomes') return json(res, recordings.outcomes(), 200, 'no-store')
     const rows = await recordings.visible(recordings.list(), req.headers.host, req.socket.remoteAddress)
-    return json(res, rows.map(row => row.status === 'scheduled' ? { ...row, guideChange: recordings.change(row) } : row), 200, 'no-store')
+    return json(res, rows.map(publicRecording).map(row =>
+      row.status === 'scheduled' ? { ...row, guideChange: recordings.change(row) } : row), 200, 'no-store')
   }
   if (!['POST', 'PATCH', 'DELETE'].includes(req.method)) return json(res, { error: 'Metodo non consentito' }, 405)
-  const origin = URL.parse(req.headers.origin || '')
-  if (!origin || !['http:', 'https:'].includes(origin.protocol) || origin.host !== req.headers.host ||
-    (req.headers['sec-fetch-site'] && req.headers['sec-fetch-site'] !== 'same-origin')) {
+  if (!sameOrigin(req)) {
     return json(res, { error: 'Richiesta da un’altra origine' }, 403)
   }
   if (req.method === 'DELETE') {
@@ -165,7 +213,7 @@ async function recordingApi(q, res, req) {
   }
   const existing = !editing && recordings.get(id, programme.s)
   if (existing) return manual ? json(res, { error: 'Esiste già una prenotazione per questo canale e orario' }, 409) :
-    json(res, existing, 201, 'no-store')
+    json(res, publicRecording(existing), 201, 'no-store')
   const defaults = scheduled ? {
     before: scheduled.start - scheduled.captureFrom,
     after: scheduled.captureTo - scheduled.end,
@@ -180,15 +228,16 @@ async function recordingApi(q, res, req) {
   }
   if (scheduled) {
     const updated = moving ? recordings.move(scheduled, programme, margins, now) : recordings.reschedule(scheduled.id, margins, now)
-    return updated ? json(res, updated, 200, 'no-store') : json(res, { error: 'Registrazione non modificabile. Verifica le prenotazioni sul canale' }, 409)
+    return updated ? json(res, publicRecording(updated), 200, 'no-store') : json(res, { error: 'Registrazione non modificabile. Verifica le prenotazioni sul canale' }, 409)
   }
-  return json(res, recordings.add(id, store.channels.get(id).name, programme, { ...margins, kind: manual ? 'manual' : 'guide' }), 201, 'no-store')
+  const added = recordings.add(id, store.channels.get(id).name, programme, { ...margins, kind: manual ? 'manual' : 'guide' })
+  return json(res, publicRecording(added), 201, 'no-store')
 }
 
 async function api(url, res, req) {
   const q = url.searchParams
   switch (url.pathname) {
-    case '/api/health': return json(res, { ...store.health(), recordingEnabled: Boolean(recordings) })
+    case '/api/health': return json(res, { ...store.health(), recordingEnabled: Boolean(recordings), epgRefreshEnabled: Boolean(EPG_REFRESH_URL) })
     case '/api/channels': return json(res, store.listChannels().map(channel => ({
       ...channel, recordable: Boolean(recordings && recordings.source(channel.id)),
     })))
@@ -218,7 +267,7 @@ async function api(url, res, req) {
       const [recording = null] = job ? await recordings.visible([job], req.headers.host, req.socket.remoteAddress) : []
       const recordingMargins = recordings ? { before: recordings.before / 60000, after: recordings.after / 60000 } : undefined
       const series = recordings ? recordings.seriesFor(q.get('c'), p.t) : null
-      return json(res, { ...p, recording, recordingMargins, followingSeries: Boolean(series?.enabled) })
+      return json(res, { ...p, recording: recording && publicRecording(recording), recordingMargins, followingSeries: Boolean(series?.enabled) })
     }
     case '/api/search': return json(res, store.search(q.get('q') || '', num(q.get('from'), Date.now())))
     default: return json(res, { error: 'non trovato' }, 404)
@@ -245,6 +294,7 @@ const server = createServer(async (req, res) => {
   try {
     const url = new URL(req.url, 'http://x')
     if (url.pathname === '/api/recordings') return await recordingApi(url.searchParams, res, req)
+    if (url.pathname === '/api/epg/refresh') return epgRefreshApi(req, res)
     if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(405); return res.end() }
     if (url.pathname.startsWith('/api/')) {
       const m = /^\/api\/live\/([^/]+)\.ts$/.exec(url.pathname)
@@ -265,13 +315,22 @@ server.listen(PORT, () => console.log(`GuidaTV in ascolto su :${PORT}`))
 // L'epg può metterci minuti ad essere pronto al primo avvio: ritenta spesso finché non c'è una guida.
 let loops = 0
 let shuttingDown = false
+let guideQueue = Promise.resolve()
+function reloadGuide(refreshStreams = false) {
+  const operation = guideQueue.then(async () => {
+    const updated = await store.refresh()
+    if (refreshStreams || !store.streams.size) await loadStreams()
+    if (!shuttingDown && recordings) {
+      try { recordings.syncSeries() } catch (err) { console.warn('Prenotazione serie:', err.message) }
+    }
+    return updated
+  })
+  guideQueue = operation.catch(() => {})
+  return operation
+}
 const loop = async () => {
-  await store.refresh()
-  if (loops++ % 18 === 0 || !store.streams.size) await loadStreams() // ~ogni 6h, o finché non c'è nulla
+  await reloadGuide(loops++ % 18 === 0) // ricarica gli stream ~ogni 6h
   if (shuttingDown) return
-  if (recordings) {
-    try { recordings.syncSeries() } catch (err) { console.warn('Prenotazione serie:', err.message) }
-  }
   setTimeout(loop, (store.channels.size ? REFRESH_MIN : 1) * 60000)
 }
 loop()

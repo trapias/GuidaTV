@@ -11,7 +11,7 @@ const state = {
   favs: new Set(store.get('favs', [])),
   view: store.get('view', 'now'),
   group: store.get('group', 'Tutti'),
-  day: 0, recordingEnabled: false,
+  day: 0, recordingEnabled: false, epgRefreshEnabled: false,
   query: '',
   player: { mode: /iPhone|iPad|iPod/.test(navigator.userAgent) ? 'scheme' : 'm3u', tpl: 'vlc://{url}', ...store.get('player', {}) },
 }
@@ -129,10 +129,14 @@ function openSettings() {
   const save = h('button', { class: 'btn pri', onclick: () => {
     state.player = { mode: mode.value, tpl: tpl.value.trim() || 'vlc://{url}' }; savePlayer(); sheet.close()
   } }, 'Salva')
-  sheet.replaceChildren(h('div', { class: 'sh' }, h('h2', {}, 'Player esterno'),
+  const guideMessage = h('div', { class: 'meta', role: 'status' })
+  const guideRefresh = state.epgRefreshEnabled && guideRefreshButton(text => { guideMessage.textContent = text })
+  sheet.replaceChildren(h('div', { class: 'sh' }, h('h2', {}, 'Impostazioni'),
     h('p', {}, 'Questa scelta vale per le dirette e le registrazioni su questo dispositivo.'),
     h('label', { class: 'frow' }, 'Come aprire lo stream', mode), row,
-    h('div', { class: 'acts' }, save, h('button', { class: 'btn', onclick: () => sheet.close() }, 'Annulla'))))
+    h('div', { class: 'acts' }, save, h('button', { class: 'btn', onclick: () => sheet.close() }, 'Annulla')),
+    guideRefresh && h('div', { class: 'recording-tools' }, guideRefresh),
+    guideRefresh && guideMessage))
   sheet.showModal()
 }
 $('#settings').addEventListener('click', openSettings)
@@ -203,6 +207,35 @@ async function viewNow() {
 
 // ---------- vista: griglia ----------
 const schedCache = new Map()
+let guideRequest
+function guideRefreshButton(report, onComplete) {
+  return h('button', { class: 'btn', onclick: async e => {
+    const button = e.currentTarget
+    button.disabled = true
+    report('Scarico i palinsesti aggiornati…')
+    try {
+      guideRequest ||= (async () => {
+        let job = await api('epg/refresh', { method: 'POST' })
+        while (job.status === 'running') {
+          await new Promise(resolve => setTimeout(resolve, 2000))
+          job = await api('epg/refresh')
+        }
+        if (job.status !== 'complete') throw new Error(job.error || 'Aggiornamento della guida non riuscito')
+        await loadGuideData()
+        schedCache.clear()
+        renderChips()
+        await render()
+        return job.updated
+      })().finally(() => { guideRequest = null })
+      const updated = await guideRequest
+      if (onComplete) await onComplete()
+      report(updated ? 'Guida aggiornata.' : 'Guida verificata.')
+    } catch (err) {
+      report(err.message)
+    } finally { button.disabled = false }
+  } }, 'Aggiorna guida')
+}
+
 async function viewGrid() {
   const list = visibleChannels()
   const type = PROGRAMME_FILTERS.get(state.group)
@@ -484,7 +517,11 @@ function openRecordings() {
   const tools = h('div', { class: 'recording-tools' },
     h('button', { class: 'btn', onclick: e => pane('Registra per orario', e.currentTarget, onCancel =>
       manualRecordingForm({ onCancel, onSaved: saved(onCancel) })) }, 'Registra per orario'),
-    h('button', { class: 'btn', onclick: e => openSeries(e.currentTarget) }, 'Serie seguite'))
+    h('button', { class: 'btn', onclick: e => openSeries(e.currentTarget) }, 'Serie seguite'),
+    state.epgRefreshEnabled && guideRefreshButton(report, async () => {
+      await pending
+      await load()
+    }))
   const panel = h('div', { class: 'sh recordings-sheet' }, h('h2', {}, 'Registrazioni'), tools, search, list, pages, message,
     h('div', { class: 'acts' }, close))
   sheet.replaceChildren(panel)
@@ -689,20 +726,27 @@ qEl.addEventListener('input', () => {
 })
 qEl.addEventListener('keydown', e => { if (e.key === 'Escape') { qEl.value = ''; state.query = ''; render() } })
 
+async function loadGuideData() {
+  const [channels, nowData, health] = await Promise.all([api('channels'), api('now'), api('health')])
+  state.channels = channels.filter(c => c.n > 0).sort(byTelecomando)
+  state.recordableChannels = channels.filter(ch => ch.recordable).sort(byTelecomando)
+  state.byId = new Map(state.channels.map(c => [c.id, c]))
+  state.nowData = nowData
+  state.recordingEnabled = health.recordingEnabled
+  state.epgRefreshEnabled = health.epgRefreshEnabled
+  $('#recordings').hidden = !state.recordingEnabled
+  return health
+}
+
+let recordingBadgeTimer
 async function init() {
   syncTabs()
   main.append(h('div', { class: 'empty' }, 'Caricamento…'))
   try {
-    const [channels, nowData, health] = await Promise.all([api('channels'), api('now'), api('health')])
-    state.channels = channels.filter(c => c.n > 0).sort(byTelecomando)
-    state.recordableChannels = channels.filter(ch => ch.recordable).sort(byTelecomando)
-    state.byId = new Map(state.channels.map(c => [c.id, c]))
-    state.nowData = nowData
-    state.recordingEnabled = health.recordingEnabled
-    $('#recordings').hidden = !state.recordingEnabled
-    if (state.recordingEnabled) {
+    const health = await loadGuideData()
+    if (state.recordingEnabled && !recordingBadgeTimer) {
       refreshRecordingBadge()
-      setInterval(refreshRecordingBadge, 30000)
+      recordingBadgeTimer = setInterval(refreshRecordingBadge, 30000)
     }
     if (!state.channels.length) {
       main.replaceChildren(h('div', { class: 'empty' }, 'La guida non è ancora pronta: il primo download può richiedere qualche minuto. Riprova tra poco.'))
