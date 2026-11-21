@@ -1,6 +1,7 @@
 // Guida TV – frontend senza dipendenze né build.
 const $ = s => document.querySelector(s)
 const main = $('#main'), chipsEl = $('#chips'), qEl = $('#q'), sheet = $('#sheet'), statusEl = $('#status')
+const isMac = /Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints < 2
 
 const store = {
   get(k, d) { try { return JSON.parse(localStorage.getItem('gtv.' + k)) ?? d } catch { return d } },
@@ -124,15 +125,38 @@ function openSettings() {
   const mode = h('select', { id: 'pmode' }, Object.entries(MODES).map(([v, l]) => h('option', { value: v, selected: v === state.player.mode }, l)))
   const tpl = h('input', { id: 'ptpl', type: 'text', value: state.player.tpl, spellcheck: 'false', autocapitalize: 'off', placeholder: 'vlc://{url}' })
   const row = h('label', { class: 'frow' }, 'Schema', tpl, h('small', {}, 'Segnaposto: {url} indirizzo, {urlenc} codificato, {name} nome canale.'))
-  const sync = () => { row.hidden = mode.value !== 'scheme' }
-  mode.addEventListener('change', sync); sync()
+  const recordingSource = isMac && h('select', { id: 'mac-recording-source' },
+    h('option', { value: 'finder', selected: !state.player.macSmb }, 'Cartella montata nel Finder'),
+    h('option', { value: 'smb', selected: state.player.macSmb }, 'Indirizzo SMB'))
+  const folder = isMac && h('input', { type: 'text', value: state.player.macFolder || '', placeholder: '/Volumes/TV',
+    spellcheck: 'false', autocapitalize: 'off', pattern: '/.*' })
+  const sourceRow = isMac && h('label', { class: 'frow' }, 'Playlist delle registrazioni su Mac', recordingSource)
+  const folderRow = isMac && h('label', { class: 'frow' }, 'Percorso del volume montato (facoltativo)', folder,
+    h('small', {}, 'Monta la condivisione nel Finder. Lascia vuoto per usare il suo nome sotto /Volumes.'))
+  const sync = () => {
+    row.hidden = mode.value !== 'scheme'
+    if (isMac) {
+      sourceRow.hidden = mode.value !== 'm3u'
+      folderRow.hidden = sourceRow.hidden || recordingSource.value === 'smb'
+    }
+  }
+  mode.addEventListener('change', sync)
+  recordingSource && recordingSource.addEventListener('change', sync)
+  sync()
   const save = h('button', { class: 'btn pri', onclick: () => {
-    state.player = { mode: mode.value, tpl: tpl.value.trim() || 'vlc://{url}' }; savePlayer(); sheet.close()
+    if (folder && !folderRow.hidden && !folder.reportValidity()) return
+    state.player = { ...state.player, mode: mode.value, tpl: tpl.value.trim() || 'vlc://{url}' }
+    if (isMac) {
+      state.player.macSmb = recordingSource.value === 'smb'
+      state.player.macFolder = folder.value.trim()
+    }
+    savePlayer()
+    sheet.close()
   } }, 'Salva')
   const guideRefresh = state.epgRefreshEnabled && guideRefreshControl()
   sheet.replaceChildren(h('div', { class: 'sh' }, h('h2', {}, 'Impostazioni'),
     h('p', {}, 'Questa scelta vale per le dirette e le registrazioni su questo dispositivo.'),
-    h('label', { class: 'frow' }, 'Come aprire lo stream', mode), row,
+    h('label', { class: 'frow' }, 'Come aprire lo stream', mode), row, sourceRow, folderRow,
     h('div', { class: 'acts' }, save, h('button', { class: 'btn', onclick: () => sheet.close() }, 'Annulla')),
     guideRefresh))
   sheet.showModal()
@@ -386,11 +410,19 @@ function recordingMetrics(job) {
 }
 const cancelRecording = job => api(`recordings?id=${encodeURIComponent(job.id)}`, { method: 'DELETE' })
 const stopRecording = job => api(`recordings?action=stop&id=${encodeURIComponent(job.id)}`, { method: 'POST' })
+function recordingPlaylistUrl(playUrl) {
+  if (!isMac || state.player.macSmb) return playUrl
+  const path = new URL(playUrl).pathname
+  if (!state.player.macFolder) return `file:///Volumes${path}`
+  const folder = state.player.macFolder.replace(/\/+$/, '').split('/').map(encodeURIComponent).join('/')
+  return `file://${folder}${path.slice(path.lastIndexOf('/'))}`
+}
+
 const recordingPlay = (job, report) => job?.playUrl && h('button', {
   class: 'btn', 'aria-label': `Riproduci ${job.title}`, onclick: () => {
     const name = job.title.replace(/[\r\n]+/g, ' ')
     return openPlayer(name, () => downloadFile(`registrazione-${job.id.slice(0, 8)}.m3u`,
-      `#EXTM3U\n#EXTINF:-1,${name}\n${job.playUrl}\n`, 'audio/x-mpegurl;charset=utf-8'), { name, url: job.playUrl }, report)
+      `#EXTM3U\n#EXTINF:-1,${name}\n${recordingPlaylistUrl(job.playUrl)}\n`, 'audio/x-mpegurl;charset=utf-8'), { name, url: job.playUrl }, report)
   },
 }, '▶ Riproduci')
 const recordingOrder = { recording: 0, waiting: 1, scheduled: 2, saved: 3, failed: 3 }

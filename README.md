@@ -89,7 +89,9 @@ Imposta `RECORDINGS_VSMETA=1` per salvare i metadati dei film nel formato di Syn
 
 Le registrazioni salvate restano visibili finché il file è nella condivisione. GuidaTV verifica il NAS mentre la finestra è aperta. Una cancellazione o uno spostamento si riflette alla verifica successiva. La finestra mostra prima le registrazioni in corso, in attesa o programmate e permette di cercare per titolo o canale, con 10 risultati per pagina. Le registrazioni fallite restano visibili finché vengono rimosse dalla finestra.
 
-**Riproduci** usa il player configurato in ⚙ e apre un indirizzo SMB diretto al NAS. Su LAN usa l'host di `GUIDATV_SMB_SHARE`. Via Tailscale imposta `GUIDATV_SMB_TAILSCALE_HOST` all'indirizzo Tailscale o al nome MagicDNS del NAS. Il dispositivo che riproduce deve poter accedere alla condivisione SMB e VLC può chiedere le credenziali del NAS.
+**Riproduci** usa il player configurato in ⚙. Su Mac, la playlist M3U delle registrazioni apre per impostazione predefinita il file nella condivisione montata dal Finder sotto `/Volumes`. Monta la condivisione prima della riproduzione. In ⚙ puoi indicare un altro percorso del volume o scegliere **Indirizzo SMB** per tornare al collegamento diretto.
+
+Il collegamento diretto usa l'host di `GUIDATV_SMB_SHARE` su LAN. Via Tailscale imposta `GUIDATV_SMB_TAILSCALE_HOST` all'indirizzo Tailscale o al nome MagicDNS del NAS. Il dispositivo che riproduce deve poter accedere alla condivisione SMB e VLC può chiedere le credenziali del NAS.
 
 Per abilitare le registrazioni, imposta `GUIDATV_SMB_SHARE`, ad esempio `//nas.local/TV`. Se Docker non risolve il nome del NAS, imposta anche `GUIDATV_SMB_IP` al suo indirizzo LAN. Crea `~/.config/guidatv/smb.credentials` (permessi `600`) con le righe `username=nome_utente` e `password=…`. L'utente SMB deve poter leggere, creare e rinominare file nella condivisione. Usa `GUIDATV_SMB_DIR` per scegliere un'altra directory di credenziali.
 
