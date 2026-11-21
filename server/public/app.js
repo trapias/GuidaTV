@@ -646,7 +646,7 @@ function openRecordings() {
         h('div', { class: 'rc' }, recordingStatus(job)),
         h('div', { class: 'rc' }, recordingTime(job)),
         h('div', { class: 'rc' }, recordingMetrics(job)),
-        job.status === 'scheduled' && job.watchGuide && h('div', { class: 'rc' }, job.guideCheckedAt
+        job.status === 'scheduled' && Boolean(job.watchGuide) && h('div', { class: 'rc' }, job.guideCheckedAt
           ? `Guida ricontrollata il ${fmtDay(job.guideCheckedAt)} alle ${fmt(job.guideCheckedAt)}`
           : 'Ricontrollo della guida prima della cattura'),
         job.guideChange && h('div', { class: 'rc' },

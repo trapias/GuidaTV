@@ -103,7 +103,7 @@ In **Impostazioni → Verifica configurazione** trovi l’ultimo caricamento del
 
 ### Player nel browser
 
-Per attivare **Nel browser** per i file MP4, imposta `RECORDINGS_BROWSER=1` e crea un file `browser.password` accanto a `smb.credentials`, leggibile dal container, con una sola riga di almeno 16 caratteri. Con la configurazione standard, `(umask 077 && openssl rand -hex 24 > ~/.config/guidatv/browser.password)` genera una password casuale. Riavvia il servizio web e usa quella password nella finestra del player. Per l'accesso fuori casa usa un indirizzo HTTPS o la tua rete Tailscale. GuidaTV legge i segmenti richiesti dal NAS per permettere la ricerca nel video. La compatibilità audio e video dipende dai codec supportati dal browser.
+Per attivare **Nel browser** per i file MP4, imposta `RECORDINGS_BROWSER=1` e crea un file `browser.password` accanto a `smb.credentials`, leggibile dal container, con la password su una sola riga. Con la configurazione standard, `(umask 077 && openssl rand -hex 24 > ~/.config/guidatv/browser.password)` genera una password casuale. Riavvia il servizio web e usa quella password nella finestra del player. Per l'accesso fuori casa usa un indirizzo HTTPS o la tua rete Tailscale. GuidaTV legge i segmenti richiesti dal NAS per permettere la ricerca nel video. La compatibilità audio e video dipende dai codec supportati dal browser.
 
 ## Sviluppo
 `cd server && npm install && npm test`

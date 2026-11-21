@@ -53,9 +53,9 @@ let playback
 if (recordings && process.env.RECORDINGS_BROWSER === '1') {
   try {
     const password = (await readFile(process.env.RECORDINGS_BROWSER_PASSWORD_FILE || '/run/guidatv/browser.password', 'utf8')).trim()
-    if (password.length < 16) throw new Error('password troppo corta')
+    if (!password) throw new Error('password vuota')
     playback = playerSession(password)
-  } catch { console.warn('Player disattivato: browser.password deve essere leggibile e contenere almeno 16 caratteri') }
+  } catch { console.warn('Player disattivato: browser.password deve essere leggibile e non vuoto') }
 }
 
 // Stream con audio/video su tracce HLS separate (Mediaset): VLC li desincronizza, quindi li uniamo
