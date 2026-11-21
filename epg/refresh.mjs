@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process'
 import { createReadStream } from 'node:fs'
 import { readFile, rename, unlink } from 'node:fs/promises'
 import { createServer } from 'node:http'
+import { createInterface } from 'node:readline'
 
 const PORT = 3000
 const guide = 'public/guide.xml'
@@ -21,7 +22,7 @@ function startServer() {
   const refresh = () => {
     if (job.status === 'running' || Date.now() - (job.finishedAt || 0) < 60000) return
     job = { status: 'running' }
-    generate().then(() => {
+    generate(progress => { job = { status: 'running', progress } }).then(() => {
       job = { status: 'complete', finishedAt: Date.now() }
     }).catch(error => {
       console.error('Aggiornamento EPG:', error.message)
@@ -56,13 +57,18 @@ function startServer() {
   })
 }
 
-async function generate() {
+async function generate(onProgress) {
   try {
     await unlink(temporary).catch(error => { if (error.code !== 'ENOENT') throw error })
     const selection = process.env.SITES ? ['--sites', process.env.SITES] : ['--channels', 'public/channels.xml']
     if (process.env.SITES && process.env.CLANG) selection.push('--lang', process.env.CLANG)
     const child = spawn(process.execPath, ['-r', '@swc-node/register', 'scripts/commands/epg/grab.ts',
-      ...selection, '--output', temporary], { stdio: 'inherit', timeout: 15 * 60000 })
+      ...selection, '--output', temporary], { stdio: ['ignore', 'pipe', 'inherit'], timeout: 15 * 60000 })
+    createInterface({ input: child.stdout }).on('line', line => {
+      console.log(line)
+      const count = line.match(/\[(\d+)\/(\d+)\]\s+\S+\s+\(/)
+      if (count) onProgress({ done: Number(count[1]), total: Number(count[2]) })
+    })
     await new Promise((resolve, reject) => {
       child.once('error', reject)
       child.once('close', code => code === 0 ? resolve() : reject(new Error(`Grabber terminato con codice ${code}`)))

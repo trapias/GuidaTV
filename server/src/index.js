@@ -100,18 +100,21 @@ function epgRefreshApi(req, res) {
   if (req.method !== 'POST') return json(res, { error: 'Metodo non consentito' }, 405)
   if (!sameOrigin(req)) return json(res, { error: 'Richiesta da un’altra origine' }, 403)
   if (epgRefresh.status !== 'running') {
-    epgRefresh = { status: 'running' }
-    requestEpgRefresh().then(updated => {
-      epgRefresh = { status: 'complete', updated }
+    const startedAt = Date.now()
+    epgRefresh = { status: 'running', startedAt }
+    requestEpgRefresh(progress => {
+      epgRefresh = { status: 'running', startedAt, progress }
+    }).then(updated => {
+      epgRefresh = { status: 'complete', updated, startedAt }
     }).catch(error => {
       console.warn('Aggiornamento manuale EPG:', error.message)
-      epgRefresh = { status: 'error', error: 'Aggiornamento della guida non riuscito. Rimane disponibile l’ultima guida valida.' }
+      epgRefresh = { status: 'error', startedAt, error: 'Aggiornamento della guida non riuscito. Rimane disponibile l’ultima guida valida.' }
     })
   }
   return json(res, epgRefresh, 202, 'no-store')
 }
 
-async function requestEpgRefresh() {
+async function requestEpgRefresh(onProgress) {
   const deadline = AbortSignal.timeout(16 * 60000)
   const workerRequest = async method => {
     const signal = AbortSignal.any([deadline, AbortSignal.timeout(10000)])
@@ -121,6 +124,7 @@ async function requestEpgRefresh() {
   }
   let job = await workerRequest('POST')
   while (job.status === 'running') {
+    onProgress(job.progress)
     await delay(2000, undefined, { signal: deadline })
     job = await workerRequest('GET')
   }

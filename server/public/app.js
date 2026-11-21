@@ -129,14 +129,12 @@ function openSettings() {
   const save = h('button', { class: 'btn pri', onclick: () => {
     state.player = { mode: mode.value, tpl: tpl.value.trim() || 'vlc://{url}' }; savePlayer(); sheet.close()
   } }, 'Salva')
-  const guideMessage = h('div', { class: 'meta', role: 'status' })
-  const guideRefresh = state.epgRefreshEnabled && guideRefreshButton(text => { guideMessage.textContent = text })
+  const guideRefresh = state.epgRefreshEnabled && guideRefreshControl()
   sheet.replaceChildren(h('div', { class: 'sh' }, h('h2', {}, 'Impostazioni'),
     h('p', {}, 'Questa scelta vale per le dirette e le registrazioni su questo dispositivo.'),
     h('label', { class: 'frow' }, 'Come aprire lo stream', mode), row,
     h('div', { class: 'acts' }, save, h('button', { class: 'btn', onclick: () => sheet.close() }, 'Annulla')),
-    guideRefresh && h('div', { class: 'recording-tools' }, guideRefresh),
-    guideRefresh && guideMessage))
+    guideRefresh))
   sheet.showModal()
 }
 $('#settings').addEventListener('click', openSettings)
@@ -207,33 +205,69 @@ async function viewNow() {
 
 // ---------- vista: griglia ----------
 const schedCache = new Map()
-let guideRequest
-function guideRefreshButton(report, onComplete) {
-  return h('button', { class: 'btn', onclick: async e => {
-    const button = e.currentTarget
+let appliedGuide
+function guideRefreshControl(onComplete) {
+  const progress = h('progress', { hidden: true, 'aria-label': 'Avanzamento aggiornamento guida' })
+  const message = h('div', { class: 'meta', role: 'status' })
+  const report = text => { if (text !== message.textContent) message.textContent = text }
+  const button = h('button', { class: 'btn', disabled: true, onclick: () => track('POST') }, 'Aggiorna guida')
+  const options = () => ({ cache: 'no-store', signal: AbortSignal.timeout(10000) })
+  const read = method => api('epg/refresh', { ...options(), method })
+
+  async function track(method) {
     button.disabled = true
-    report('Scarico i palinsesti aggiornati…')
+    if (method === 'POST') {
+      progress.hidden = false
+      progress.removeAttribute('value')
+      report('Preparo l’aggiornamento della guida…')
+    }
     try {
-      guideRequest ||= (async () => {
-        let job = await api('epg/refresh', { method: 'POST' })
-        while (job.status === 'running') {
-          await new Promise(resolve => setTimeout(resolve, 2000))
-          job = await api('epg/refresh')
+      let job = await read(method)
+      let failures = 0
+      while (job.status === 'running') {
+        if (!button.isConnected || !sheet.open) return
+        progress.hidden = false
+        const { done, total } = job.progress || {}
+        if (total > 0) {
+          progress.max = total
+          progress.value = done
+          if (!failures) report(done < total ? `Elaborate ${done} richieste di palinsesto su ${total}.` : 'Salvo e carico la guida aggiornata…')
+        } else if (!failures) {
+          progress.removeAttribute('value')
+          report('Preparo lo scaricamento dei palinsesti…')
         }
-        if (job.status !== 'complete') throw new Error(job.error || 'Aggiornamento della guida non riuscito')
-        await loadGuideData()
+        await new Promise(resolve => setTimeout(resolve, 2000))
+        if (!button.isConnected || !sheet.open) return
+        try {
+          job = await read('GET')
+          failures = 0
+        } catch (error) {
+          if (++failures >= 3) throw error
+          report('Connessione interrotta. Verifico di nuovo lo stato…')
+        }
+      }
+      if (!button.isConnected || !sheet.open) return
+      if (job.status === 'error') return report(job.error)
+      if (job.status !== 'complete') return
+      if (job.startedAt !== appliedGuide) {
+        report('Carico la guida aggiornata…')
+        await loadGuideData(options())
+        appliedGuide = job.startedAt
         schedCache.clear()
         renderChips()
-        await render()
-        return job.updated
-      })().finally(() => { guideRequest = null })
-      const updated = await guideRequest
-      if (onComplete) await onComplete()
-      report(updated ? 'Guida aggiornata.' : 'Guida verificata.')
+        render()
+      }
+      onComplete?.()
+      report(job.updated ? 'Guida aggiornata.' : 'Guida verificata.')
     } catch (err) {
-      report(err.message)
-    } finally { button.disabled = false }
-  } }, 'Aggiorna guida')
+      report(err.data?.error || 'Impossibile verificare l’aggiornamento. Riprova tra poco.')
+    } finally {
+      progress.hidden = true
+      button.disabled = false
+    }
+  }
+  queueMicrotask(() => track('GET'))
+  return h('div', { class: 'guide-refresh' }, button, progress, message)
 }
 
 async function viewGrid() {
@@ -517,12 +551,9 @@ function openRecordings() {
   const tools = h('div', { class: 'recording-tools' },
     h('button', { class: 'btn', onclick: e => pane('Registra per orario', e.currentTarget, onCancel =>
       manualRecordingForm({ onCancel, onSaved: saved(onCancel) })) }, 'Registra per orario'),
-    h('button', { class: 'btn', onclick: e => openSeries(e.currentTarget) }, 'Serie seguite'),
-    state.epgRefreshEnabled && guideRefreshButton(report, async () => {
-      await pending
-      await load()
-    }))
-  const panel = h('div', { class: 'sh recordings-sheet' }, h('h2', {}, 'Registrazioni'), tools, search, list, pages, message,
+    h('button', { class: 'btn', onclick: e => openSeries(e.currentTarget) }, 'Serie seguite'))
+  const guideRefresh = state.epgRefreshEnabled && guideRefreshControl(() => Promise.resolve(pending).then(load))
+  const panel = h('div', { class: 'sh recordings-sheet' }, h('h2', {}, 'Registrazioni'), tools, guideRefresh, search, list, pages, message,
     h('div', { class: 'acts' }, close))
   sheet.replaceChildren(panel)
   sheet.showModal()
@@ -726,8 +757,8 @@ qEl.addEventListener('input', () => {
 })
 qEl.addEventListener('keydown', e => { if (e.key === 'Escape') { qEl.value = ''; state.query = ''; render() } })
 
-async function loadGuideData() {
-  const [channels, nowData, health] = await Promise.all([api('channels'), api('now'), api('health')])
+async function loadGuideData(options) {
+  const [channels, nowData, health] = await Promise.all([api('channels', options), api('now', options), api('health', options)])
   state.channels = channels.filter(c => c.n > 0).sort(byTelecomando)
   state.recordableChannels = channels.filter(ch => ch.recordable).sort(byTelecomando)
   state.byId = new Map(state.channels.map(c => [c.id, c]))
