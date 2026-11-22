@@ -87,7 +87,7 @@ Il margine predefinito è di 2 minuti prima e 10 dopo. Per modificarlo, imposta 
 
 In **Impostazioni → Profili margini** puoi salvare le preferenze di **Film** e **Sport in diretta** per quel browser. Scegli un profilo nel modulo della registrazione e ritocca i due margini per la singola prenotazione.
 
-Il servizio cattura in MPEG-TS in `/data/recordings`. Al termine, salva audio e video in MP4 senza ricodificarli e trasferisce il file alla condivisione configurata in `GUIDATV_SMB_SHARE`. Se il trasferimento fallisce, il file resta in locale e il servizio riprova dopo un minuto. Nel frattempo può trasferire le altre registrazioni. La finestra mostra durata e dimensione quando disponibili, l'orario del prossimo ritentativo e un contatore dei nuovi esiti per browser.
+Il servizio cattura in MPEG-TS in `/data/recordings`. Al termine, salva audio e video in MP4 senza ricodificarli e trasferisce il file alla destinazione SMB configurata per quel tipo di programma. Se il trasferimento fallisce, il file resta in locale e il servizio riprova dopo un minuto. Nel frattempo può trasferire le altre registrazioni. La finestra mostra durata e dimensione quando disponibili, l'orario del prossimo ritentativo e un contatore dei nuovi esiti per browser.
 
 Imposta `RECORDINGS_VSMETA=1` per salvare i metadati dei film nel formato di Synology Video Station. GuidaTV pubblica `nome.mp4.vsmeta` accanto all'MP4, prima di rendere visibile il video. Usa i dati disponibili in guida, compresa l'immagine JPEG quando scaricabile. Per l'importazione, la cartella di destinazione deve essere indicizzata come **Film** in Video Station. I metadati e i file aggiunti in precedenza sul NAS vengono conservati.
 
@@ -95,13 +95,15 @@ Le registrazioni salvate restano visibili finché il file è nella condivisione.
 
 Durante la cattura, **Altre azioni → +15 min** o **+30 min** sposta l’orario di fine. GuidaTV chiede conferma se l’estensione supera il limite di registrazioni contemporanee. Puoi terminare prima con **Ferma e salva**.
 
-**Riproduci** usa il player configurato in ⚙. Su Mac, la playlist M3U delle registrazioni apre per impostazione predefinita il file nella condivisione montata dal Finder sotto `/Volumes`. Monta la condivisione prima della riproduzione. In ⚙ puoi indicare un altro percorso del volume o scegliere **Indirizzo SMB** per tornare al collegamento diretto.
+**Riproduci** usa il player configurato in ⚙. Su Mac, la playlist M3U delle registrazioni apre per impostazione predefinita il file nella condivisione montata dal Finder sotto `/Volumes`. Monta la condivisione prima della riproduzione. In ⚙ puoi indicare un altro percorso per il volume delle registrazioni TV o scegliere **Indirizzo SMB** per tornare al collegamento diretto.
 
-Il collegamento diretto usa l'host di `GUIDATV_SMB_SHARE` su LAN. Via Tailscale imposta `GUIDATV_SMB_TAILSCALE_HOST` all'indirizzo Tailscale o al nome MagicDNS del NAS. Il dispositivo che riproduce deve poter accedere alla condivisione SMB e VLC può chiedere le credenziali del NAS.
+Il collegamento diretto usa l'host della destinazione SMB su LAN. Via Tailscale imposta `GUIDATV_SMB_TAILSCALE_HOST` all'indirizzo Tailscale o al nome MagicDNS del NAS. Il dispositivo che riproduce deve poter accedere alla condivisione SMB e VLC può chiedere le credenziali del NAS.
 
-Per abilitare le registrazioni, imposta `GUIDATV_SMB_SHARE`, ad esempio `//nas.local/TV`. Se Docker non risolve il nome del NAS, imposta anche `GUIDATV_SMB_IP` al suo indirizzo LAN. Crea `~/.config/guidatv/smb.credentials` (permessi `600`) con le righe `username=nome_utente` e `password=…`. L'utente SMB deve poter leggere, creare e rinominare file nella condivisione. Usa `GUIDATV_SMB_DIR` per scegliere un'altra directory di credenziali.
+Nel file `.env`, imposta `GUIDATV_SMB_SHARE` per le registrazioni TV, ad esempio `//nas.local/TV`. Imposta anche `GUIDATV_SMB_MOVIE_SHARE` per inviare i film riconosciuti dalla guida a una destinazione distinta sullo stesso NAS, ad esempio `//nas.local/Video` o `//nas.local/Video/Film registrati`. Se il valore è vuoto, anche i film vengono salvati nella destinazione TV. GuidaTV usa il titolo del film e aggiunge l’anno se presente in guida. La configurazione si applica ai nuovi trasferimenti.
 
-In **Impostazioni → Verifica configurazione** trovi l’ultimo caricamento della guida, i canali registrabili e lo spazio locale. **Prova scrittura sul NAS** crea, rinomina, verifica e rimuove un piccolo file temporaneo.
+Se Docker non risolve il nome del NAS, imposta anche `GUIDATV_SMB_IP` al suo indirizzo LAN. Crea `~/.config/guidatv/smb.credentials` (permessi `600`) con le righe `username=nome_utente` e `password=…`. L'utente SMB deve poter leggere, creare e rinominare file in ogni destinazione configurata. Usa `GUIDATV_SMB_DIR` per scegliere un'altra directory di credenziali.
+
+In **Impostazioni → Verifica configurazione** trovi l’ultimo caricamento della guida, i canali registrabili e lo spazio locale. **Prova scrittura sul NAS** crea, rinomina, verifica e rimuove un piccolo file temporaneo in ogni destinazione configurata.
 
 ### Player nel browser
 

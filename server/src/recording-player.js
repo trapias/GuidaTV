@@ -51,6 +51,8 @@ export function recordingMedia(recordings, isAuthenticated, json) {
     if (row?.status !== 'saved' || !/\.mp4$/i.test(row.filename)) {
       return json(res, { error: 'Video non disponibile' }, 404, 'no-store')
     }
+    const archive = recordings.archiveFor(row)
+    if (!archive) return json(res, { error: 'Video non disponibile' }, 404, 'no-store')
     const filename = archivedName(row)
     if (/[\x00-\x1f"\\/]/.test(filename)) return json(res, { error: 'Video non disponibile' }, 404, 'no-store')
     if (playing >= 4) return json(res, { error: 'Player occupato, riprova tra poco' }, 503, 'no-store')
@@ -61,7 +63,7 @@ export function recordingMedia(recordings, isAuthenticated, json) {
     res.setTimeout(30000, () => res.destroy())
     try {
       const signal = AbortSignal.any([recordings.abort.signal, abort.signal])
-      const size = await recordings.archive.fileSize(recordings.directory, filename, signal)
+      const size = await archive.fileSize(recordings.directory, filename, signal)
       if (!size) return json(res, { error: 'Video assente sul NAS' }, 404, 'no-store')
       const range = byteRange(req.headers.range, size)
       const headers = {
@@ -81,7 +83,7 @@ export function recordingMedia(recordings, isAuthenticated, json) {
         res.writeHead(partial ? 206 : 200, headers)
         return res.end()
       }
-      const reader = recordings.archive.read(filename, start, length, signal)
+      const reader = archive.read(filename, start, length, signal)
       reader.on('error', () => reader.stdout.destroy())
       const chunks = reader.stdout[Symbol.asyncIterator]()
       const first = await chunks.next()

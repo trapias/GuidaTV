@@ -98,7 +98,7 @@ test('l’elenco verifica il NAS, riconosce i file parziali e usa l’host adatt
       assert.equal(result[1].playUrl, `smb://100.100.10.20/TV/${encodeURIComponent(filename)}`)
     }
 
-    queue.archiveCheck.expires = 0
+    queue.archiveChecks.get(archive).expires = 0
     archive.command = async () => { throw new Error('NAS offline') }
     const offline = await queue.visible(rows, '192.168.1.20:8085')
     assert.deepEqual(offline.map(row => row.id), [scheduled.id, job.id])
@@ -390,6 +390,44 @@ test('Video Station riceve il file nativo del film prima della pubblicazione del
 
     const sport = queue.add('rai2', 'Rai 2', { ...film, t: 'Gara', type: 'sport' })
     assert.equal(await queue.prepareMovieSidecar(sport), null)
+  } finally {
+    await queue.stop()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('archivia i film nella seconda destinazione e conserva il nome dopo un ritentativo', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'guidatv-movie-archive-'))
+  const tvFiles = new Set()
+  const movieFiles = new Set(['300 (2007).mp4'])
+  const mockArchive = (share, files) => Object.assign(new SmbArchive({ share }), {
+    files: async () => new Set([...files].map(filename => filename.toLowerCase())),
+    fileSize: async (_, filename) => files.has(filename) ? 1 : null,
+    publish: async (_, __, filename) => { files.add(filename) },
+  })
+  const archive = mockArchive('//nas.local/TV', tvFiles)
+  const movieArchive = mockArchive('//nas.local/Video/Film registrati', movieFiles)
+  const options = { directory, archive, movieArchive, before: 0, after: 0 }
+  let queue = new Recordings(options)
+  try {
+    const start = Date.now() + 60000
+    const film = queue.add('iris', 'Iris', { t: '300', type: 'movie', releaseYear: 2007, s: start, e: start + 60000 })
+    const tv = queue.add('tv8', 'TV8', { t: 'Gara', type: 'sport', s: start, e: start + 60000 })
+    const match = await queue.reserveArchive(film)
+    assert.equal(match.filename, `300 (2007) [${film.id.slice(0, 8)}].mp4`)
+    queue.update(film.id, 'waiting')
+    await queue.stop()
+    queue = new Recordings(options)
+
+    for (const job of [film, tv]) {
+      await writeFile(join(directory, `${job.id}.mp4`), 'campione')
+      await queue.publish(queue.getById(job.id))
+    }
+    assert.deepEqual([...movieFiles], ['300 (2007).mp4', match.filename])
+    assert.deepEqual([...tvFiles], [tv.filename])
+    const [savedFilm, savedTv] = await queue.visible([queue.getById(film.id), queue.getById(tv.id)], 'localhost')
+    assert.equal(savedFilm.playUrl, `smb://nas.local/Video/Film%20registrati/${encodeURIComponent(match.filename)}`)
+    assert.equal(savedTv.playUrl, `smb://nas.local/TV/${encodeURIComponent(tv.filename)}`)
   } finally {
     await queue.stop()
     await rm(directory, { recursive: true, force: true })

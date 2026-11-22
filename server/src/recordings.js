@@ -16,19 +16,23 @@ const GUIDE_CHECK_LEAD = 15 * 60000
 export const archivedName = row => row.partial ? row.filename.replace(/(\.(?:mp4|ts))$/, ' - parziale$1') : row.filename
 const earlyStopReason = (row, at) => at < row.end ? 'Fermata prima della fine prevista del programma' : null
 
+const archiveNamePart = (value, limit) =>
+  Array.from(value.replace(/[^\p{L}\p{N}() -]+/gu, ' ').trim().replace(/ +/g, ' ')).slice(0, limit).join('').trim()
+
 function archiveName(title, channel, start, id) {
-  const part = value => Array.from(value.replace(/[^\p{L}\p{N}() -]+/gu, ' ').trim().replace(/ +/g, ' ')).slice(0, 42).join('')
   const date = new Date(start).toLocaleString('sv-SE', {
     timeZone: 'Europe/Rome', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
   }).replace(':', '-')
-  return `${date} - ${part(channel)} - ${part(title)} [${id.slice(0, 8)}].mp4`
+  return `${date} - ${archiveNamePart(channel, 42)} - ${archiveNamePart(title, 42)} [${id.slice(0, 8)}].mp4`
 }
 
 export class Recordings {
-  constructor({ directory, store, archive, before, after, limit = 2, sources = new Map(), videoStationMetadata = false, log = console }) {
+  constructor({ directory, store, archive, movieArchive, before, after, limit = 2, sources = new Map(), videoStationMetadata = false, log = console }) {
     this.directory = directory
     this.store = store
     this.archive = archive
+    this.movieArchive = movieArchive
+    this.archiveChecks = new Map()
     this.before = before
     this.after = after
     this.limit = limit
@@ -64,7 +68,7 @@ export class Recordings {
       stoppedAt: 'INTEGER', uploadAfter: 'INTEGER NOT NULL DEFAULT 0',
       kind: "TEXT NOT NULL DEFAULT 'guide'", subtitle: 'TEXT', episode: 'TEXT', seriesId: 'TEXT',
       durationMs: 'INTEGER', bytes: 'INTEGER', outcomeAt: 'INTEGER', movieMetadata: 'TEXT',
-      watchGuide: 'INTEGER NOT NULL DEFAULT 0', guideCheckedAt: 'INTEGER',
+      watchGuide: 'INTEGER NOT NULL DEFAULT 0', guideCheckedAt: 'INTEGER', archiveTarget: 'TEXT',
     }
     for (const [name, type] of Object.entries(additions)) {
       if (!columns.includes(name)) this.db.exec(`ALTER TABLE recordings ADD COLUMN ${name} ${type}`)
@@ -80,24 +84,35 @@ export class Recordings {
     return stream && !stream.web ? stream : this.sources.get(channel)
   }
 
-  async visible(rows, requestHost, remoteAddress) {
-    if (!rows.some(row => row.status === 'saved')) return rows
-    if (!this.archiveCheck || Date.now() >= this.archiveCheck.expires) {
-      const check = { expires: Infinity }
-      check.result = this.archive.files(this.directory, this.abort.signal).then(files => {
-        this.archiveFiles = files
+  archiveFor(row) {
+    return row.archiveTarget === 'movie' ? this.movieArchive : this.archive
+  }
+
+  verifyArchive(archive) {
+    if (!archive) return Promise.resolve({ verified: false })
+    let check = this.archiveChecks.get(archive)
+    if (!check || Date.now() >= check.expires) {
+      check = { expires: Infinity, files: check?.files }
+      check.result = archive.files(this.directory, this.abort.signal).then(files => {
+        check.files = files
         return { files, verified: true }
-      }).catch(() => ({ files: this.archiveFiles, verified: false }))
+      }).catch(() => ({ files: check.files, verified: false }))
         .finally(() => { check.expires = Date.now() + ARCHIVE_CACHE_MS })
-      this.archiveCheck = check
+      this.archiveChecks.set(archive, check)
     }
-    const { files, verified } = await this.archiveCheck.result
-    return rows.flatMap(row => {
+    return check.result
+  }
+
+  async visible(rows, requestHost, remoteAddress) {
+    const verifiedRows = await Promise.all(rows.map(async row => {
       if (row.status !== 'saved') return [row]
+      const archive = this.archiveFor(row)
+      const { files, verified } = await this.verifyArchive(archive)
       const filename = archivedName(row)
       if (files && !files.has(filename.toLowerCase())) return []
-      return [{ ...row, archiveVerified: verified, playUrl: verified ? this.archive.url(filename, requestHost, remoteAddress) : null }]
-    })
+      return [{ ...row, archiveVerified: verified, playUrl: verified ? archive.url(filename, requestHost, remoteAddress) : null }]
+    }))
+    return verifiedRows.flat()
   }
 
   get(channel, start) {
@@ -317,6 +332,27 @@ export class Recordings {
     return metadata
   }
 
+  async reserveArchive(row) {
+    if (row.archiveTarget) return row
+    const metadata = this.movieArchive && this.rememberMovie(row)
+    let filename = row.filename
+    if (metadata) {
+      const { title, year } = JSON.parse(metadata)
+      const name = archiveNamePart(title, 48)
+      if (name) {
+        const stem = year ? `${name} (${year})` : name
+        const candidate = archivedName({ ...row, filename: `${stem}.mp4` })
+        const paths = [candidate, `${candidate}.part`, `${candidate}.vsmeta`, `${candidate}.vsmeta.part`]
+        const sizes = await Promise.all(paths.map(path => this.movieArchive.fileSize(this.directory, path, this.abort.signal)))
+        filename = sizes.every(size => size === null) ? `${stem}.mp4` : `${stem} [${row.id.slice(0, 8)}].mp4`
+      }
+    }
+    const target = metadata ? 'movie' : 'tv'
+    this.db.prepare('UPDATE recordings SET archiveTarget = ?, filename = ? WHERE id = ?')
+      .run(target, filename, row.id)
+    return { ...row, archiveTarget: target, filename, movieMetadata: metadata || row.movieMetadata }
+  }
+
   async prepareMovieSidecar(row) {
     if (!this.videoStationMetadata) return null
     const metadata = this.rememberMovie(row)
@@ -403,7 +439,7 @@ export class Recordings {
       }
       const stream = this.source(row.channel)
       if (!diskFull && stream && this.active.size < this.limit) {
-        if (this.videoStationMetadata) this.rememberMovie(row)
+        if (this.videoStationMetadata || this.movieArchive) this.rememberMovie(row)
         if (stream.resolve) this.captureResolved(row, stream)
         else this.capture(row, stream)
       }
@@ -512,18 +548,21 @@ export class Recordings {
     const mp4Bytes = await fileSize(mp4)
     if (row.bytes !== mp4Bytes || row.durationMs == null) await this.measure(row.id, mp4, mp4Bytes)
 
-    const filename = archivedName(row)
+    let archive, filename
     try {
+      row = await this.reserveArchive(row)
+      archive = this.archiveFor(row)
+      filename = archivedName(row)
       const sidecar = await this.prepareMovieSidecar(row)
-      await this.archive.publish(this.directory, localName, filename, this.abort.signal, sidecar)
+      await archive.publish(this.directory, localName, filename, this.abort.signal, sidecar)
     } catch {
       return this.retryUpload(row, 'Trasferimento al NAS non riuscito, nuovo tentativo in attesa')
     }
     // Attendi l'eventuale verifica iniziata prima del trasferimento e invalida il suo risultato.
-    const check = this.archiveCheck
+    const check = this.archiveChecks.get(archive)
     await check?.result
-    this.archiveFiles?.add(filename.toLowerCase())
-    if (this.archiveCheck === check) this.archiveCheck = null
+    check?.files?.add(filename.toLowerCase())
+    if (check && this.archiveChecks.get(archive) === check) check.expires = 0
     this.update(row.id, 'saved', row.partial ? row.error : null, row.partial)
     await this.cleanCapture(row.id)
     await this.clean(mp4)
@@ -544,7 +583,8 @@ export class Recordings {
     clearInterval(this.timer)
     this.abort.abort()
     for (const capture of this.active.values()) capture.stop('Registrazione interrotta dal riavvio')
-    await Promise.allSettled([this.ticking, this.upload, this.archiveCheck?.result, ...[...this.active.values()].map(capture => capture.done)])
+    await Promise.allSettled([this.ticking, this.upload, ...[...this.archiveChecks.values()].map(check => check.result),
+      ...[...this.active.values()].map(capture => capture.done)])
     this.db.close()
   }
 }

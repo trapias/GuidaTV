@@ -19,7 +19,7 @@ test('il player richiede una sessione, supporta la ricerca e rifiuta file sconos
   const recordings = {
     getById: id => id === 'known' ? { filename: 'Città.mp4', status: 'saved', partial: 1 } : null,
     abort: new AbortController(),
-    archive: {
+    archiveFor: () => ({
       async fileSize(_, name) { assert.equal(name, filename); return contents.length },
       read(name, start, length) {
         assert.equal(name, filename)
@@ -27,7 +27,7 @@ test('il player richiede una sessione, supporta la ricerca e rifiuta file sconos
         output.stdout = Readable.from([contents.subarray(start, start + length)])
         return output
       },
-    },
+    }),
   }
   const media = recordingMedia(recordings, session.authenticated, (res, body, status) => {
     res.writeHead(status)

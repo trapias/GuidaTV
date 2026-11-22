@@ -16,9 +16,11 @@ function isTailscale(host) {
 
 export class SmbArchive {
   constructor({ share, ip, credentials, tailscaleHost }) {
-    this.args = [share, '-A', credentials, '-t', '20']
+    const [, host, folder, subfolder] = /^\/\/([^/]+)\/([^/]+)(?:\/(.*))?$/.exec(share) || []
+    this.path = subfolder ? subfolder.split('/').filter(Boolean) : []
+    this.args = [host && folder ? `//${host}/${folder}` : share, '-A', credentials, '-t', '20']
     if (ip) this.args.push('-I', ip)
-    const [, host, folder] = /^\/\/([^/]+)\/([^/]+)$/.exec(share) || []
+    if (this.path.length) this.args.push('-D', this.path.join('\\'))
     this.localHost = host
     this.folder = folder
     this.readHost = ip || host
@@ -53,7 +55,8 @@ export class SmbArchive {
     const remote = isTailscale(hostname) || isTailscale(remoteAddress)
     const host = remote ? this.tailscaleHost : this.localHost
     if (!host || !this.folder) return null
-    return `smb://${host}/${encodeURIComponent(this.folder)}/${encodeURIComponent(filename)}`
+    const path = [this.folder, ...this.path, filename].map(encodeURIComponent).join('/')
+    return `smb://${host}/${path}`
   }
 
   async fileSize(directory, filename, signal) {
@@ -71,7 +74,8 @@ export class SmbArchive {
   read(filename, start, length, signal) {
     const script = fileURLToPath(new URL('./smb-read.py', import.meta.url))
     const host = this.readHost.replace(/^\[|\]$/g, '')
-    return spawn('python3', [script, this.credentials, host, this.folder, filename, start, length],
+    const path = [this.folder, ...this.path].join('\\')
+    return spawn('python3', [script, this.credentials, host, path, filename, start, length],
       { signal, stdio: ['ignore', 'pipe', 'ignore'] })
   }
 

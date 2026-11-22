@@ -131,7 +131,7 @@ function openSettings() {
   const folder = isMac && h('input', { type: 'text', value: state.player.macFolder || '', placeholder: '/Volumes/TV',
     spellcheck: 'false', autocapitalize: 'off', pattern: '/.*' })
   const sourceRow = isMac && h('label', { class: 'frow' }, 'Playlist delle registrazioni su Mac', recordingSource)
-  const folderRow = isMac && h('label', { class: 'frow' }, 'Percorso del volume montato (facoltativo)', folder,
+  const folderRow = isMac && h('label', { class: 'frow' }, 'Percorso del volume delle registrazioni TV (facoltativo)', folder,
     h('small', {}, 'Monta la condivisione nel Finder. Lascia vuoto per usare il suo nome sotto /Volumes.'))
   const sync = () => {
     row.hidden = mode.value !== 'scheme'
@@ -493,19 +493,19 @@ const watchRecording = job => {
   const query = new URLSearchParams({ action: 'watch', id: job.id, enabled: job.watchGuide ? 0 : 1 })
   return api(`recordings?${query}`, { method: 'PATCH' })
 }
-function recordingPlaylistUrl(playUrl) {
+function recordingPlaylistUrl({ playUrl, archiveTarget }) {
   if (!isMac || state.player.macSmb) return playUrl
   const path = new URL(playUrl).pathname
-  if (!state.player.macFolder) return `file:///Volumes${path}`
+  if (!state.player.macFolder || archiveTarget === 'movie') return `file:///Volumes${path}`
   const folder = state.player.macFolder.replace(/\/+$/, '').split('/').map(encodeURIComponent).join('/')
-  return `file://${folder}${path.slice(path.lastIndexOf('/'))}`
+  return `file://${folder}${path.slice(path.indexOf('/', 1))}`
 }
 
 const recordingPlay = (job, report) => job?.playUrl && h('button', {
   class: 'btn', 'aria-label': `Riproduci ${job.title}`, onclick: () => {
     const name = job.title.replace(/[\r\n]+/g, ' ')
     return openPlayer(name, () => downloadFile(`registrazione-${job.id.slice(0, 8)}.m3u`,
-      `#EXTM3U\n#EXTINF:-1,${name}\n${recordingPlaylistUrl(job.playUrl)}\n`, 'audio/x-mpegurl;charset=utf-8'), { name, url: job.playUrl }, report)
+      `#EXTM3U\n#EXTINF:-1,${name}\n${recordingPlaylistUrl(job)}\n`, 'audio/x-mpegurl;charset=utf-8'), { name, url: job.playUrl }, report)
   },
 }, '▶ Riproduci')
 

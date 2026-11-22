@@ -24,6 +24,13 @@ const PUBLIC_DIR = process.env.PUBLIC_DIR || fileURLToPath(new URL('../public', 
 const STREAMS_SOURCE = process.env.STREAMS_M3U || '' // URL o file; default /data/streams.m3u
 const store = new Store({ epgUrl: EPG_URL, dataDir: DATA_DIR, lcn: await loadLcn(DATA_DIR) })
 const recordingShare = process.env.RECORDINGS_SMB
+const movieShare = process.env.RECORDINGS_MOVIE_SMB
+const makeArchive = share => new SmbArchive({
+  share,
+  ip: process.env.RECORDINGS_SMB_IP,
+  tailscaleHost: process.env.RECORDINGS_SMB_TAILSCALE_HOST,
+  credentials: process.env.RECORDINGS_SMB_CREDENTIALS || '/run/guidatv/smb.credentials',
+})
 const recordingSources = new Map()
 if (process.env.RECORDINGS_TV8 === '1') recordingSources.set('tv8', { resolve: resolveTv8 })
 if (process.env.RECORDINGS_RAI === '1') {
@@ -37,12 +44,8 @@ const padding = (value, fallback) => {
 const recordings = recordingShare && new Recordings({
   directory: join(DATA_DIR, 'recordings'),
   store,
-  archive: new SmbArchive({
-    share: recordingShare,
-    ip: process.env.RECORDINGS_SMB_IP,
-    tailscaleHost: process.env.RECORDINGS_SMB_TAILSCALE_HOST,
-    credentials: process.env.RECORDINGS_SMB_CREDENTIALS || '/run/guidatv/smb.credentials',
-  }),
+  archive: makeArchive(recordingShare),
+  movieArchive: movieShare && movieShare !== recordingShare ? makeArchive(movieShare) : undefined,
   before: padding(process.env.RECORDINGS_BEFORE_MIN, 2),
   after: padding(process.env.RECORDINGS_AFTER_MIN, 10),
   limit: /^[1-8]$/.test(process.env.RECORDINGS_MAX_CONCURRENT) ? Number(process.env.RECORDINGS_MAX_CONCURRENT) : 2,
@@ -119,9 +122,9 @@ async function setupApi(req, res) {
   if (!['GET', 'POST'].includes(req.method)) return json(res, { error: 'Metodo non consentito' }, 405, 'no-store')
   if (req.method === 'POST' && !sameOrigin(req)) return json(res, { error: 'Richiesta da un’altra origine' }, 403, 'no-store')
   if (req.method === 'POST' && recordings && (!nasCheckResult || Date.now() - nasCheckResult.at > 15000)) {
-    nasCheck ||= recordings.archive.checkWrite(recordings.directory, recordings.abort.signal)
-      .then(() => { nasCheckResult = { ok: true, at: Date.now() } })
-      .catch(() => { nasCheckResult = { ok: false, at: Date.now() } })
+    nasCheck ||= Promise.allSettled([recordings.archive, recordings.movieArchive].filter(Boolean)
+      .map(archive => archive.checkWrite(recordings.directory, recordings.abort.signal)))
+      .then(results => { nasCheckResult = { ok: results.every(result => result.status === 'fulfilled'), at: Date.now() } })
       .finally(() => { nasCheck = null })
     await nasCheck
   }
