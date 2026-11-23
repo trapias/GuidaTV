@@ -20,11 +20,15 @@ export async function remuxMp4(inputs, output, signal) {
     if (list) {
       await writeFile(list, inputs.map(input => `file ${relative(dirname(list), input)}\n`).join(''))
     }
-    return await exec('ffmpeg', [
+    const mux = codecs => exec('ffmpeg', [
       '-hide_banner', '-loglevel', 'error', '-nostdin', '-y',
       ...(list ? ['-f', 'concat', '-safe', '1', '-i', list] : ['-i', inputs[0]]),
-      '-map', '0:v:0', '-map', '0:a:0', '-c', 'copy', '-movflags', '+faststart', '-f', 'mp4', output,
+      '-map', '0:v:0', '-map', '0:a:0', ...codecs, '-movflags', '+faststart', '-f', 'mp4', output,
     ], { signal })
+    return await mux(['-c', 'copy']).catch(error => {
+      if (signal?.aborted || !/\[aac_adtstoasc\b/.test(error.stderr)) throw error
+      return mux(['-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-abort_on', 'empty_output_stream'])
+    })
   } finally {
     if (list) await unlink(list).catch(() => {})
   }
