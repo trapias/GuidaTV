@@ -2,6 +2,8 @@
 
 Guida TV dei canali italiani, in locale. Raggiungibile da LAN e Tailscale.
 
+[![Sostieni Guida TV su Buy Me a Coffee](https://bmc-cdn.nyc3.digitaloceanspaces.com/BMC-button-images/custom_images/orange_img.png)](https://www.buymeacoffee.com/trapias)
+
 [English overview](#english-overview)
 
 - **epg**: basato su `ghcr.io/iptv-org/epg` — scarica i palinsesti (Rai, Mediaset, Sky, Superguida) e genera `guide.xml` (XMLTV). Aggiornamento all'avvio e alle 04:00 e 14:00.
