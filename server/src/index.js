@@ -13,12 +13,14 @@ import { playerSession, recordingMedia } from './recording-player.js'
 import { SmbArchive } from './smb.js'
 import { resolveTv8 } from './tv8.js'
 import { raiChannels, resolveRai } from './rai.js'
+import { createTmdb } from './tmdb.js'
 
 const PORT = Number(process.env.PORT || 8080)
 const EPG_URL = process.env.EPG_URL || 'http://epg:3000/guide.xml'
 const EPG_REFRESH_URL = process.env.EPG_REFRESH_URL
 const DATA_DIR = process.env.DATA_DIR || '/data'
 const REFRESH_MIN = Number(process.env.REFRESH_MIN || 20)
+const tmdb = createTmdb({ credential: (process.env.TMDB_API_KEY || '').trim(), cacheFile: join(DATA_DIR, 'tmdb.json') })
 const PUBLIC_DIR = process.env.PUBLIC_DIR || fileURLToPath(new URL('../public', import.meta.url))
 
 const STREAMS_SOURCE = process.env.STREAMS_M3U || '' // URL o file; default /data/streams.m3u
@@ -188,7 +190,9 @@ async function requestEpgRefresh(onProgress) {
 }
 
 function publicRecording({ movieMetadata, ...row }) {
-  return row
+  let movie
+  try { movie = movieMetadata && JSON.parse(movieMetadata) } catch { /* metadati non leggibili */ }
+  return movie?.title ? { ...row, movie: { title: movie.title, year: movie.year || null } } : row
 }
 
 async function recordingApi(q, res, req) {
@@ -349,6 +353,9 @@ async function api(url, res, req) {
       const recordingMargins = recordings ? { before: recordings.before / 60000, after: recordings.after / 60000 } : undefined
       const series = recordings ? recordings.seriesFor(q.get('c'), p.t) : null
       return json(res, { ...p, recording: recording && publicRecording(recording), recordingMargins, followingSeries: Boolean(series?.enabled) })
+    }
+    case '/api/movie-link': {
+      try { return json(res, { url: await tmdb.lookup(q.get('title'), q.get('year')) }) } catch { return json(res, {}) }
     }
     case '/api/search': return json(res, store.search(q.get('q') || '', num(q.get('from'), Date.now())))
     default: return json(res, { error: 'non trovato' }, 404)

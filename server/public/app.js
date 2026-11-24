@@ -741,7 +741,7 @@ function openRecordings() {
           : 'Ricontrollo della guida prima della cattura'),
         job.guideChange && h('div', { class: 'rc' },
           `Nuovo orario in guida ${captureWindow(job.guideChange.s, job.guideChange.e, job.start)} · ${job.guideChange.covered ? 'Coperto dalla cattura' : 'Fuori dalla finestra di cattura'}`)),
-      (primary || menu) && h('div', { class: 'recording-actions' }, primary, menu))
+      (primary || menu || job.movie) && h('div', { class: 'recording-actions' }, job.movie && movieLink(job.movie.title, job.movie.year), primary, menu))
   }
   function draw() {
     const query = search.value.trim().toLowerCase()
@@ -914,6 +914,17 @@ function bookingForm({ controls, fields, values, method, label, confirmLabel, on
 }
 
 // ---------- dettaglio ----------
+// Link a The Movie Database: compare solo se il server trova un film con lo stesso titolo.
+function movieLink(title, year, className = 'btn') {
+  const link = h('a', { class: className, href: '#', target: '_blank', rel: 'noopener noreferrer', hidden: true }, 'The Movie Database ↗')
+  api(`movie-link?${new URLSearchParams({ title, ...(year && { year }) })}`).then(({ url }) => {
+    if (!url) return
+    link.href = url
+    link.hidden = false
+  }, () => {})
+  return link
+}
+
 async function openDetail(chId, s) {
   let p
   try { p = await api(`programme?c=${encodeURIComponent(chId)}&s=${s}`) } catch { return showStatus('Dettaglio non disponibile') }
@@ -969,7 +980,7 @@ async function openDetail(chId, s) {
     h('div', { class: 'meta' }, `${ch?.lcn ? ch.lcn + ' · ' : ''}${ch?.name ?? chId} · ${fmtDay(p.s)} · ${fmt(p.s)}–${fmt(p.e)}${p.cat ? ' · ' + p.cat : ''}`),
     p.desc && h('p', {}, p.desc),
     status, timing, form,
-    h('div', { class: 'acts' }, live, record, series, recordingPlay(p.recording, text => { status.textContent = text }),
+    h('div', { class: 'acts' }, p.type === 'movie' && movieLink(p.t, p.releaseYear), live, record, series, recordingPlay(p.recording, text => { status.textContent = text }),
       recordingBrowserButton(p.recording, () => {
         const back = () => openDetail(chId, s)
         sheet.replaceChildren(h('div', { class: 'sh' }, h('h2', {}, p.recording.title), recordingPlayerView(p.recording, back)))
