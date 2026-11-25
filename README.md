@@ -49,9 +49,11 @@ Su telefono: "Aggiungi a schermata Home" per averla come app.
 priorità Rai > Mediaset > Sky > Superguida). Modifica lo script (EXCLUDE/ALIAS) e rigenera, poi `docker compose restart epg`.
 I canali senza dati non compaiono nell'app.
 
+Apri **Canali** per scegliere cosa mostrare in **Adesso** e **Griglia**. Puoi selezionare un’intera emittente o singoli canali, oppure usare **Nascondi canali senza LCN** per deselezionare quelli senza un numero del digitale terrestre assegnato nella guida. Premi **Salva** per applicare la scelta in questo browser.
+
 L'app usa i loghi dei canali presenti in `guide.xml` e, se mancano, gli URL in `server/src/logos.json` (iptv-org, Sky, Tivùsat, SuperGuida TV e RaiPlay).
 
-In **Cinema**, **Serie TV** e **News** la guida mostra i programmi corrispondenti di tutti i canali. **Adesso** mostra quelli in onda, **Griglia** quelli del giorno selezionato. La copertura dipende dai metadati delle emittenti e dai titoli riconoscibili dei telegiornali.
+In **Cinema**, **Serie TV** e **News** la guida mostra i programmi corrispondenti dei canali visibili. **Adesso** mostra quelli in onda, **Griglia** quelli del giorno selezionato. La copertura dipende dai metadati delle emittenti e dai titoli riconoscibili dei telegiornali.
 
 Usa **Aggiorna guida** in **Impostazioni** o **Registrazioni** per riscaricare i palinsesti. L’operazione può richiedere qualche minuto. Se l’EPG pubblica un nuovo orario per una registrazione, GuidaTV propone **Aggiorna prenotazione**.
 

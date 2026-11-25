@@ -24,9 +24,13 @@
     <button id="recordings" class="btn" hidden>Registrazioni</button>
     <button id="settings" class="gear" aria-label="Impostazioni player" title="Player esterno">⚙</button>
   </div>
-  <div id="chips" class="chips" role="group" aria-label="Filtra guida"></div>
+  <div class="guide-filters">
+    <div id="chips" class="chips" role="group" aria-label="Filtra guida"></div>
+    <button id="manage-channels" class="btn" disabled>Canali</button>
+  </div>
 </header>
 <main id="main"></main>
+<main id="channel-settings" hidden></main>
 <div id="status" class="status" hidden></div>
 <dialog id="sheet"></dialog>
 <script src="/app.js" type="module"></script>

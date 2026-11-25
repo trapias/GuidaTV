@@ -1,6 +1,7 @@
 // Guida TV – frontend senza dipendenze né build.
 const $ = s => document.querySelector(s)
 const main = $('#main'), chipsEl = $('#chips'), qEl = $('#q'), sheet = $('#sheet'), statusEl = $('#status')
+const channelSettings = $('#channel-settings'), manageChannels = $('#manage-channels'), header = $('.top')
 const isMac = /Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints < 2
 
 const store = {
@@ -10,6 +11,7 @@ const store = {
 const state = {
   channels: [], recordableChannels: [], byId: new Map(), nowData: {},
   favs: new Set(store.get('favs', [])),
+  hiddenChannels: new Set(store.get('hiddenChannels', [])),
   view: store.get('view', 'now'),
   group: store.get('group', 'Tutti'),
   day: 0, recordingEnabled: false, epgRefreshEnabled: false, browserPlayer: false,
@@ -65,14 +67,14 @@ function toggleFav(id) {
   state.favs.has(id) ? state.favs.delete(id) : state.favs.add(id)
   store.set('favs', [...state.favs])
   renderChips()
-  if (state.group === 'Preferiti' && !state.favs.size) setGroup('Tutti')
 }
 const starBtn = ch => {
   const b = h('button', { class: 'star' + (state.favs.has(ch.id) ? ' on' : ''), 'aria-label': 'Preferito', title: 'Preferito' }, state.favs.has(ch.id) ? '★' : '☆')
   b.addEventListener('click', e => {
+    const wasInFavorites = state.group === 'Preferiti'
     e.stopPropagation(); toggleFav(ch.id)
     const on = state.favs.has(ch.id); b.classList.toggle('on', on); b.textContent = on ? '★' : '☆'
-    if (state.group === 'Preferiti') render()
+    if (wasInFavorites) render()
   })
   return b
 }
@@ -242,15 +244,23 @@ const PROGRAMME_FILTERS = new Map([
   ['Serie TV', 'series'],
   ['News', 'news'],
 ])
+const enabledChannels = () => state.channels.filter(c => !state.hiddenChannels.has(c.id))
 function visibleChannels() {
   const { group } = state
-  if (group === 'Tutti' || PROGRAMME_FILTERS.has(group)) return state.channels
-  if (group === 'Preferiti') return state.channels.filter(c => state.favs.has(c.id))
-  return state.channels.filter(c => c.group === group)
+  const channels = enabledChannels()
+  if (group === 'Tutti' || PROGRAMME_FILTERS.has(group)) return channels
+  if (group === 'Preferiti') return channels.filter(c => state.favs.has(c.id))
+  return channels.filter(c => c.group === group)
 }
 function renderChips() {
-  const present = new Set(state.channels.map(c => c.group))
-  const groups = ['Tutti', ...(state.favs.size ? ['Preferiti'] : []), ...GROUP_ORDER.filter(g => present.has(g) || PROGRAMME_FILTERS.has(g))]
+  const channels = enabledChannels()
+  const present = new Set(channels.map(c => c.group))
+  const groups = ['Tutti', ...(channels.some(c => state.favs.has(c.id)) ? ['Preferiti'] : []),
+    ...GROUP_ORDER.filter(g => present.has(g) || PROGRAMME_FILTERS.has(g))]
+  if (!groups.includes(state.group)) {
+    state.group = 'Tutti'
+    store.set('group', state.group)
+  }
   chipsEl.replaceChildren(...groups.map(g => h('button', {
     class: 'chip' + (g === state.group ? ' on' : ''),
     'aria-pressed': String(g === state.group),
@@ -258,6 +268,120 @@ function renderChips() {
   }, g === 'Preferiti' ? '★ Preferiti' : g)))
 }
 function setGroup(g) { state.group = g; store.set('group', g); renderChips(); render() }
+
+// ---------- visibilità dei canali ----------
+function broadcasterOf(ch) {
+  const name = ch.name.toLowerCase().replace(/[^a-z0-9]/g, '')
+  if (/^(sky|primafila)|^(tv8|cielo)(hd)?$/.test(name)) return 'Sky'
+  if (/^premium/.test(name)) return 'Mediaset'
+  if (ch.group === 'Rai' || ch.group === 'Mediaset') return ch.group
+  if (/^la7/.test(name)) return 'La7'
+  if (/^(discovery|warner|eurosport|dmax|realtime|nove|giallo|frisbee|k2|hgtv|foodnetwork|motortrend|cartoonnetwork|boomerang|cnplus1)/.test(name)) return 'Warner Bros. Discovery'
+  if (/^(mtv|vh1|nick|comedy|paramount)|^super$/.test(name)) return 'Paramount'
+  if (/^dea(kids|junior)/.test(name)) return 'De Agostini'
+  if (/^dazn/.test(name)) return 'DAZN'
+  return 'Altri canali'
+}
+
+function openChannelSettings() {
+  const hidden = new Set(state.hiddenChannels)
+  function setVisibility(id, visible) {
+    if (visible) hidden.delete(id)
+    else hidden.add(id)
+  }
+  const byBroadcaster = new Map()
+  for (const ch of state.channels) {
+    const broadcaster = broadcasterOf(ch)
+    if (!byBroadcaster.has(broadcaster)) byBroadcaster.set(broadcaster, [])
+    byBroadcaster.get(broadcaster).push(ch)
+  }
+  const titles = [...byBroadcaster.keys()].filter(name => name !== 'Altri canali').sort((a, b) => a.localeCompare(b, 'it'))
+  if (byBroadcaster.has('Altri canali')) titles.push('Altri canali')
+  const groups = titles.map(name => {
+    const count = h('span', { class: 'meta' })
+    const all = h('input', { type: 'checkbox' })
+    const rows = byBroadcaster.get(name).map(ch => {
+      const input = h('input', { type: 'checkbox', checked: !hidden.has(ch.id), onchange: () => {
+        setVisibility(ch.id, input.checked)
+        syncGroup()
+      } })
+      const row = h('label', { class: 'channel-option' }, input, lcnBadge(ch), ch.name)
+      return { ch, input, row }
+    })
+    function syncGroup() {
+      const visible = rows.filter(({ input }) => input.checked).length
+      count.textContent = `${visible} su ${rows.length} visibili`
+      all.checked = visible === rows.length
+      all.indeterminate = visible > 0 && !all.checked
+    }
+    all.addEventListener('change', () => {
+      for (const { ch, input } of rows) {
+        input.checked = all.checked
+        setVisibility(ch.id, all.checked)
+      }
+      syncGroup()
+    })
+    syncGroup()
+    const section = h('details', { class: 'channel-group' },
+      h('summary', {}, name, count),
+      h('label', { class: 'channel-option channel-group-all' }, all,
+        name === 'Altri canali' ? 'Mostra tutti gli altri canali' : `Mostra tutti i canali di ${name}`),
+      h('div', { class: 'channel-options' }, rows.map(({ row }) => row)))
+    return { name, section, rows, syncGroup }
+  })
+  const hideWithoutLcn = h('button', { class: 'btn', onclick: () => {
+    for (const { rows, syncGroup } of groups) {
+      for (const { ch, input } of rows) {
+        if (ch.lcn) continue
+        input.checked = false
+        setVisibility(ch.id, false)
+      }
+      syncGroup()
+    }
+  } }, 'Nascondi canali senza LCN')
+  const noResults = h('p', { class: 'meta', role: 'status', hidden: true }, 'Nessun canale trovato.')
+  const search = h('input', { type: 'search', placeholder: 'Cerca canale o emittente', 'aria-label': 'Cerca canale o emittente',
+    oninput: () => {
+      const query = search.value.trim().toLowerCase()
+      for (const { name, section, rows } of groups) {
+        const matchesName = name.toLowerCase().includes(query)
+        for (const { ch, row } of rows) row.hidden = !matchesName && !ch.name.toLowerCase().includes(query)
+        section.hidden = rows.every(({ row }) => row.hidden)
+        if (query && !section.hidden) section.open = true
+      }
+      noResults.hidden = groups.some(({ section }) => !section.hidden)
+    } })
+  const scroll = window.scrollY
+  function close() {
+    channelSettings.hidden = true
+    channelSettings.replaceChildren()
+    header.hidden = main.hidden = false
+    window.scrollTo(0, scroll)
+    manageChannels.focus({ preventScroll: true })
+  }
+  const title = h('h2', { tabindex: '-1' }, 'Canali visibili')
+  channelSettings.replaceChildren(
+    h('div', { class: 'channel-settings-header' },
+      h('div', { class: 'channel-settings-heading' }, title,
+        h('div', { class: 'channel-settings-actions' },
+          h('button', { class: 'btn', onclick: close }, 'Annulla'),
+          h('button', { class: 'btn pri', onclick: () => {
+            state.hiddenChannels = hidden
+            store.set('hiddenChannels', [...hidden])
+            renderChips()
+            close()
+            render()
+          } }, 'Salva'))),
+      h('p', { class: 'meta' }, 'Scegli quali canali mostrare in Adesso e Griglia. Le preferenze si salvano in questo browser.')),
+    h('div', { class: 'channel-settings-tools' }, h('label', { class: 'frow' }, search), hideWithoutLcn),
+    h('p', { class: 'meta' }, 'LCN è il numero del canale sul digitale terrestre. Puoi riattivare i canali a cui manca.'),
+    noResults, ...groups.map(({ section }) => section))
+  header.hidden = main.hidden = true
+  channelSettings.hidden = false
+  window.scrollTo(0, 0)
+  title.focus()
+}
+manageChannels.addEventListener('click', openChannelSettings)
 
 // ---------- vista: adesso ----------
 async function viewNow() {
@@ -1030,6 +1154,7 @@ async function loadGuideData(options) {
   state.recordingEnabled = health.recordingEnabled
   state.epgRefreshEnabled = health.epgRefreshEnabled
   state.browserPlayer = health.browserPlayer
+  manageChannels.disabled = !state.channels.length
   $('#recordings').hidden = !state.recordingEnabled
   return health
 }
@@ -1048,7 +1173,6 @@ async function init() {
       main.replaceChildren(h('div', { class: 'empty' }, 'La guida non è ancora pronta: il primo download può richiedere qualche minuto. Riprova tra poco.'))
       return setTimeout(init, 20000)
     }
-    if (state.group === 'Preferiti' && !state.favs.size) state.group = 'Tutti'
     if (!health.ok) showStatus('Attenzione: la guida non è aggiornata')
     renderChips(); render()
   } catch (e) {
