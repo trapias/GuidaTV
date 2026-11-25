@@ -61,6 +61,14 @@ In **Impostazioni** scegli come aprire gli stream diretti su questo dispositivo.
 
 I palinsesti si aggiornano all’avvio e alle 04:00 e 14:00, ora italiana. Puoi usare **Aggiorna guida** in **Impostazioni** o **Registrazioni**. La barra di avanzamento mostra quante richieste di palinsesto sono state elaborate.
 
+### Eventi Prime Video
+
+**Adesso** mostra le dirette di Prime Video o il prossimo evento. **Griglia** mostra gli eventi del giorno selezionato in una riga Prime Video. Entrambe le viste li includono in **Tutti** e **Sport**. Seleziona il filtro **Prime Video** accanto a **Tutti** per consultare l’intero calendario degli eventi inclusi con Prime pubblicati nella pagina Sport italiana.
+
+Su iPhone e iPad, **Apri nell’app** usa il collegamento di Prime Video all’evento. **Apri sul web** porta alla pagina ufficiale. L’accesso con il tuo account Amazon avviene su Prime Video. Per gli eventi futuri, **Aggiungi al calendario** scarica un file `.ics` con l’orario d’inizio e un promemoria cinque minuti prima.
+
+Per nascondere gli eventi e il relativo filtro, apri **Canali**, togli la spunta **Prime Video** in alto e premi **Salva**. La scelta si applica ad **Adesso** e **Griglia** per quel browser.
+
 ## Registrazioni
 
 ### Prenotare un programma, una serie o un orario
@@ -143,7 +151,7 @@ Per eseguire i test del server, usa `cd server && npm install && npm test`.
 
 ## English overview
 
-GuidaTV is a self-hosted TV guide and PVR for Italian television. Browse what’s on, search the programme grid, and choose which channels to show. With an SMB NAS, you can schedule single programmes or series, save them as MP4s, and optionally play them in the browser.
+GuidaTV is a self-hosted TV guide and PVR for Italian television. Browse what’s on, search the programme grid, and choose which channels to show. Live and upcoming Prime Video sports events link to the official service and support calendar reminders for upcoming events. With an SMB NAS, you can schedule single TV programmes or series, save them as MP4s, and optionally play them in the browser.
 
 Docker Compose starts the guide without a NAS. The interface is in Italian, and the bundled channels and recording sources are specific to Italian broadcasters.
 

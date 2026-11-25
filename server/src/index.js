@@ -14,6 +14,7 @@ import { SmbArchive } from './smb.js'
 import { resolveTv8 } from './tv8.js'
 import { raiChannels, resolveRai } from './rai.js'
 import { createTmdb } from './tmdb.js'
+import { createPrimeVideo } from './prime-video.js'
 
 const PORT = Number(process.env.PORT || 8080)
 const EPG_URL = process.env.EPG_URL || 'http://epg:3000/guide.xml'
@@ -21,6 +22,7 @@ const EPG_REFRESH_URL = process.env.EPG_REFRESH_URL
 const DATA_DIR = process.env.DATA_DIR || '/data'
 const REFRESH_MIN = Number(process.env.REFRESH_MIN || 20)
 const tmdb = createTmdb({ credential: (process.env.TMDB_API_KEY || '').trim(), cacheFile: join(DATA_DIR, 'tmdb.json') })
+const primeVideo = createPrimeVideo()
 const PUBLIC_DIR = process.env.PUBLIC_DIR || fileURLToPath(new URL('../public', import.meta.url))
 
 const STREAMS_SOURCE = process.env.STREAMS_M3U || '' // URL o file; default /data/streams.m3u
@@ -339,6 +341,7 @@ async function api(url, res, req) {
       return res.end(singleM3u(name, s, playUrl(req, id, s)))
     }
     case '/api/now': return json(res, store.now(num(q.get('at'), Date.now())))
+    case '/api/prime-video': return json(res, await primeVideo(), 200, 'no-store')
     case '/api/schedule': {
       const from = num(q.get('from'), Date.now()), to = num(q.get('to'), from + 86400000)
       if (to - from > 4 * 86400000) return json(res, { error: 'intervallo troppo ampio' }, 400)

@@ -3,6 +3,8 @@ const $ = s => document.querySelector(s)
 const main = $('#main'), chipsEl = $('#chips'), qEl = $('#q'), sheet = $('#sheet'), statusEl = $('#status')
 const channelSettings = $('#channel-settings'), manageChannels = $('#manage-channels'), header = $('.top')
 const isMac = /Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints < 2
+const isAppleMobile = /iPhone|iPad|iPod/.test(navigator.userAgent) ||
+  (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1)
 
 const store = {
   get(k, d) { try { return JSON.parse(localStorage.getItem('gtv.' + k)) ?? d } catch { return d } },
@@ -239,6 +241,10 @@ const byTelecomando = (a, b) => (a.lcn || 1e4) - (b.lcn || 1e4) || rank(a) - ran
 
 // ---------- filtri ----------
 const GROUP_ORDER = ['Rai', 'Mediaset', 'Altri free', 'Sport', 'Cinema', 'Serie TV', 'News', 'Sky', 'Altri']
+const PRIME_GROUP = 'Prime Video'
+const PRIME_CHANNEL = { id: 'prime-video', name: PRIME_GROUP }
+const primeEnabled = () => !state.hiddenChannels.has(PRIME_CHANNEL.id)
+const showPrimeInGuide = () => primeEnabled() && ['Tutti', 'Sport'].includes(state.group)
 const PROGRAMME_FILTERS = new Map([
   ['Cinema', 'movie'],
   ['Serie TV', 'series'],
@@ -255,7 +261,8 @@ function visibleChannels() {
 function renderChips() {
   const channels = enabledChannels()
   const present = new Set(channels.map(c => c.group))
-  const groups = ['Tutti', ...(channels.some(c => state.favs.has(c.id)) ? ['Preferiti'] : []),
+  if (primeEnabled()) present.add('Sport')
+  const groups = ['Tutti', ...(primeEnabled() ? [PRIME_GROUP] : []), ...(channels.some(c => state.favs.has(c.id)) ? ['Preferiti'] : []),
     ...GROUP_ORDER.filter(g => present.has(g) || PROGRAMME_FILTERS.has(g))]
   if (!groups.includes(state.group)) {
     state.group = 'Tutti'
@@ -267,7 +274,16 @@ function renderChips() {
     onclick: () => setGroup(g),
   }, g === 'Preferiti' ? '★ Preferiti' : g)))
 }
-function setGroup(g) { state.group = g; store.set('group', g); renderChips(); render() }
+function setGroup(g) {
+  if (g === PRIME_GROUP) {
+    clearTimeout(deb)
+    qEl.value = state.query = ''
+  }
+  state.group = g
+  store.set('group', g)
+  renderChips()
+  render()
+}
 
 // ---------- visibilità dei canali ----------
 function broadcasterOf(ch) {
@@ -289,6 +305,10 @@ function openChannelSettings() {
     if (visible) hidden.delete(id)
     else hidden.add(id)
   }
+  const primeCheckbox = h('input', { type: 'checkbox', checked: primeEnabled(),
+    onchange: () => setVisibility(PRIME_CHANNEL.id, primeCheckbox.checked),
+  })
+  const primeOption = h('label', { class: 'channel-group channel-option channel-standalone' }, primeCheckbox, PRIME_GROUP)
   const byBroadcaster = new Map()
   for (const ch of state.channels) {
     const broadcaster = broadcasterOf(ch)
@@ -330,6 +350,8 @@ function openChannelSettings() {
     return { name, section, rows, syncGroup }
   })
   const hideWithoutLcn = h('button', { class: 'btn', onclick: () => {
+    primeCheckbox.checked = false
+    setVisibility(PRIME_CHANNEL.id, false)
     for (const { rows, syncGroup } of groups) {
       for (const { ch, input } of rows) {
         if (ch.lcn) continue
@@ -343,13 +365,14 @@ function openChannelSettings() {
   const search = h('input', { type: 'search', placeholder: 'Cerca canale o emittente', 'aria-label': 'Cerca canale o emittente',
     oninput: () => {
       const query = search.value.trim().toLowerCase()
+      primeOption.hidden = !PRIME_GROUP.toLowerCase().includes(query)
       for (const { name, section, rows } of groups) {
         const matchesName = name.toLowerCase().includes(query)
         for (const { ch, row } of rows) row.hidden = !matchesName && !ch.name.toLowerCase().includes(query)
         section.hidden = rows.every(({ row }) => row.hidden)
         if (query && !section.hidden) section.open = true
       }
-      noResults.hidden = groups.some(({ section }) => !section.hidden)
+      noResults.hidden = !primeOption.hidden || groups.some(({ section }) => !section.hidden)
     } })
   const scroll = window.scrollY
   function close() {
@@ -375,7 +398,7 @@ function openChannelSettings() {
       h('p', { class: 'meta' }, 'Scegli quali canali mostrare in Adesso e Griglia. Le preferenze si salvano in questo browser.')),
     h('div', { class: 'channel-settings-tools' }, h('label', { class: 'frow' }, search), hideWithoutLcn),
     h('p', { class: 'meta' }, 'LCN è il numero del canale sul digitale terrestre. Puoi riattivare i canali a cui manca.'),
-    noResults, ...groups.map(({ section }) => section))
+    primeOption, noResults, ...groups.map(({ section }) => section))
   header.hidden = main.hidden = true
   channelSettings.hidden = false
   window.scrollTo(0, 0)
@@ -386,11 +409,13 @@ manageChannels.addEventListener('click', openChannelSettings)
 // ---------- vista: adesso ----------
 async function viewNow() {
   const list = visibleChannels()
-  if (!list.length) return main.append(h('div', { class: 'empty' }, 'Nessun canale in questo filtro.'))
+  const showPrime = showPrimeInGuide()
+  if (!list.length && !showPrime) return main.append(h('div', { class: 'empty' }, 'Nessun canale in questo filtro.'))
   const type = PROGRAMME_FILTERS.get(state.group)
   const cards = h('div', { class: 'cards' })
-  const empty = h('div', { class: 'empty', hidden: true }, 'Nessun programma di questo tipo in onda.')
+  const empty = h('div', { class: 'empty', hidden: true }, type ? 'Nessun programma di questo tipo in onda.' : 'Nessun canale in questo filtro.')
   main.append(cards, empty)
+  let primeCards = []
   const draw = () => {
     const now = Date.now()
     const matches = []
@@ -411,10 +436,20 @@ async function viewNow() {
         next && (!type || next[5] === type) && h('div', { class: 'next' }, h('b', {}, fmt(next[0])), ' ', next[2]),
       ))
     }
-    cards.replaceChildren(...matches)
-    empty.hidden = matches.length > 0
+    cards.replaceChildren(...primeCards, ...matches)
+    empty.hidden = cards.childElementCount > 0
   }
   draw()
+  if (showPrime) watchPrime(cards, ({ events, stale }) => {
+    const live = events.filter(event => event.live)
+    const selected = live.length ? live : events.slice(0, 1)
+    primeCards = selected.map(event => h('button', { class: 'card prime-card',
+      onclick: () => openPrimeDetail(event, stale),
+    }, h('span', { class: 'cname' }, PRIME_GROUP),
+      h('span', { class: 'ctitle' }, event.t),
+      h('span', { class: 'csub' }, primeTiming(event, stale))))
+    draw()
+  })
   timers.push(setInterval(async () => { try { state.nowData = await api('now'); draw() } catch {} }, 60000))
 }
 
@@ -486,13 +521,17 @@ function guideRefreshControl(onComplete) {
 }
 
 async function viewGrid() {
-  const list = visibleChannels()
-  const type = PROGRAMME_FILTERS.get(state.group)
-  const days = h('div', { class: 'days' }, [0, 1, 2, 3].map(o => h('button', {
-    class: 'chip' + (o === state.day ? ' on' : ''), onclick: () => { state.day = o; render() },
-  }, o === 0 ? 'Oggi' : o === 1 ? 'Domani' : new Date(dayStart(o)).toLocaleDateString('it-IT', { weekday: 'short', day: 'numeric' }))))
+  const days = h('div', { class: 'days' }, [0, 1, 2, 3].map(o => {
+    const selected = o === state.day
+    return h('button', { class: 'chip' + (selected ? ' on' : ''), 'aria-pressed': String(selected),
+      onclick: () => { state.day = o; render() },
+    }, o === 0 ? 'Oggi' : o === 1 ? 'Domani' : new Date(dayStart(o)).toLocaleDateString('it-IT', { weekday: 'short', day: 'numeric' }))
+  }))
   main.append(days)
-  if (!list.length) return main.append(h('div', { class: 'empty' }, 'Nessun canale in questo filtro.'))
+  const list = visibleChannels()
+  const showPrime = showPrimeInGuide()
+  const type = PROGRAMME_FILTERS.get(state.group)
+  if (!list.length && !showPrime) return main.append(h('div', { class: 'empty' }, 'Nessun canale in questo filtro.'))
 
   const from = dayStart(state.day), to = dayStart(state.day + 1)
   const key = `${from}`
@@ -507,6 +546,9 @@ async function viewGrid() {
   const head = h('div', { class: 'ghead' }, h('div', { class: 'corner', style: `width:${colW}px` }),
     h('div', { class: 'lane', style: `width:${laneW}px` }, Array.from({ length: 24 }, (_, i) => h('div', { class: 'hour', style: `left:${i * 60 * ppm}px` }, `${String(i).padStart(2, '0')}:00`))))
   grid.append(head)
+  const primeRow = showPrime && h('div', { class: 'grow prime-grid-row', hidden: true },
+    h('button', { class: 'gch', style: `width:${colW}px`, onclick: () => setGroup(PRIME_GROUP) }, PRIME_GROUP))
+  if (primeRow) grid.append(primeRow)
   const liveEls = []
   for (const ch of list) {
     const lane = h('div', { class: 'lane', style: `width:${laneW}px` })
@@ -537,6 +579,102 @@ async function viewGrid() {
   if (state.day === 0) { line = h('div', { class: 'nowline' }); grid.append(line); timers.push(setInterval(mark, 30000)) }
   mark()
   wrap.scrollLeft = Math.max(0, (state.day === 0 ? (Date.now() - from) / 60000 : 17.5 * 60) * ppm - 60)
+  if (primeRow) watchPrime(primeRow, ({ events, stale }) => {
+    drawPrimeRow(primeRow, events, stale, { from, to, ppm, laneW })
+  })
+}
+
+function watchPrime(container, onUpdate) {
+  let lastResult
+  async function update() {
+    let events = [], stale = false, available = false
+    try { ({ events, stale, available } = await api('prime-video')) } catch {}
+    if (!container.isConnected) return
+    const result = JSON.stringify({ events, stale, available })
+    if (result === lastResult) return
+    lastResult = result
+    onUpdate({ events, stale, available })
+  }
+  timers.push(setInterval(update, 60000))
+  return update()
+}
+
+function drawPrimeRow(row, events, stale, { from, to, ppm, laneW }) {
+  const now = Date.now()
+  const today = from <= now && now < to
+  const markers = events.filter(event => event.live ? today : from <= event.s && event.s < to)
+    .map(event => ({ event, x: ((event.live ? now : event.s) - from) / 60000 * ppm }))
+    .sort((a, b) => a.x - b.x)
+  row.hidden = !markers.length
+  const width = 190
+  const tracks = []
+  for (const { event, x } of markers) {
+    const left = Math.min(x, laneW - width)
+    let track = tracks.find(entry => entry.end <= left)
+    if (!track) {
+      track = { lane: h('div', { class: 'lane', style: `width:${laneW}px` }) }
+      tracks.push(track)
+    }
+    track.end = left + width + 4
+    const time = event.live ? primeTiming(event, stale) : fmt(event.s)
+    track.lane.append(h('button', { class: 'prog prime-marker' + (event.live && !stale ? ' live' : ''),
+      style: `left:${left}px;width:${width}px`, title: `${event.t} · ${time}`,
+      onclick: () => openPrimeDetail(event, stale),
+    }, h('span', { class: 'pt' }, event.t), h('span', { class: 'ps' }, time)))
+  }
+  row.replaceChildren(row.firstChild, h('div', {}, tracks.map(track => track.lane)))
+}
+
+function primeTiming(event, stale) {
+  if (event.live) return stale ? 'In diretta all’ultimo aggiornamento' : 'In diretta'
+  return `${fmtDay(event.s)} · ${fmt(event.s)}`
+}
+
+function primeActions(event) {
+  const appUrl = isAppleMobile && event.appUrl
+  return [
+    appUrl && h('a', { class: 'btn pri', href: appUrl }, 'Apri nell’app'),
+    h('a', { class: 'btn', href: event.url, target: '_blank', rel: 'noopener noreferrer' },
+      appUrl ? 'Apri sul web ↗' : 'Apri su Prime Video ↗'),
+    !event.live && h('button', { class: 'btn', onclick: () => downloadIcs(event, PRIME_CHANNEL) }, 'Aggiungi al calendario'),
+  ]
+}
+
+function openPrimeDetail(event, stale) {
+  sheet.replaceChildren(h('div', { class: 'sh' },
+    h('h2', {}, event.t), h('div', { class: 'meta' }, `${PRIME_GROUP} · ${primeTiming(event, stale)}`),
+    h('div', { class: 'acts' }, primeActions(event),
+      h('button', { class: 'btn', onclick: () => sheet.close() }, 'Chiudi'))))
+  sheet.showModal()
+}
+
+function viewPrimeVideo() {
+  const list = h('section', { class: 'results', 'aria-label': 'Eventi Prime Video' })
+  const status = h('p', { class: 'empty', role: 'status' }, 'Caricamento eventi Prime Video…')
+  main.append(status, list)
+  return watchPrime(list, ({ events, stale, available }) => {
+    let lastHeading
+    const rows = []
+    for (const event of events) {
+      const heading = event.live ? (stale ? 'In diretta all’ultimo aggiornamento' : 'In diretta') : fmtDay(event.s)
+      if (heading !== lastHeading) rows.push(h('h2', { class: 'dayh' }, heading))
+      lastHeading = heading
+      rows.push(h('div', { class: 'res prime-event' },
+        event.s && h('time', { class: 'rt', datetime: new Date(event.s).toISOString() }, fmt(event.s)),
+        h('div', { class: 'rm rn' }, event.t),
+        h('div', { class: 'prime-actions' }, primeActions(event))))
+    }
+    list.replaceChildren(...rows)
+    status.hidden = events.length > 0 && !stale
+    if (events.length) {
+      status.className = 'prime-notice'
+      status.textContent = 'Aggiornamento non riuscito. Controlla gli orari su Prime Video.'
+    } else {
+      status.className = 'empty'
+      status.replaceChildren(available && !stale ? 'Nessun evento in programma. ' : 'Calendario Prime Video al momento non disponibile. ',
+        h('a', { href: 'https://www.primevideo.com/-/it/sports', target: '_blank', rel: 'noopener noreferrer' }, 'Apri Prime Video'))
+    }
+  })
 }
 
 // ---------- vista: ricerca ----------
@@ -1117,7 +1255,8 @@ function downloadIcs(p, ch) {
   const z = ms => new Date(ms).toISOString().replace(/[-:]/g, '').replace(/\.\d+/, '')
   const esc = s => String(s || '').replace(/[\;,]/g, m => '\\' + m).replace(/\n/g, '\\n')
   const body = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//GuidaTV//IT', 'BEGIN:VEVENT',
-    `UID:${p.s}-${ch?.id}@guidatv`, `DTSTAMP:${z(Date.now())}`, `DTSTART:${z(p.s)}`, `DTEND:${z(p.e)}`,
+    `UID:${p.id ?? p.s}-${ch?.id}@guidatv`, `DTSTAMP:${z(Date.now())}`, `DTSTART:${z(p.s)}`,
+    ...(p.e ? [`DTEND:${z(p.e)}`] : []), ...(p.url ? [`URL:${p.url}`] : []),
     `SUMMARY:${esc(p.t)} (${esc(ch?.name)})`, `DESCRIPTION:${esc(p.desc)}`,
     'BEGIN:VALARM', 'TRIGGER:-PT5M', 'ACTION:DISPLAY', `DESCRIPTION:${esc(p.t)}`, 'END:VALARM', 'END:VEVENT', 'END:VCALENDAR'].join('\r\n')
   downloadFile('programma.ics', body, 'text/calendar')
@@ -1128,6 +1267,7 @@ async function render() {
   clear()
   try {
     if (state.query.length >= 2) await viewSearch()
+    else if (state.group === PRIME_GROUP) await viewPrimeVideo()
     else if (state.view === 'grid') await viewGrid()
     else await viewNow()
   } catch (e) { console.error(e); showStatus('Errore nel caricamento dei dati') }
