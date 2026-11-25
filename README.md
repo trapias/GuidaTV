@@ -6,6 +6,8 @@ Puoi accedere a GuidaTV dalla rete locale o tramite Tailscale.
 
 [Installazione Docker](#installazione-rapida-con-docker) · [Configurazione NAS](#abilitare-le-registrazioni-sul-nas) · [Uso della guida](#usare-la-guida) · [Registrazioni](#registrazioni) · [Schermate](#schermate) · [English overview](#english-overview)
 
+[![Sostieni Guida TV su Buy Me a Coffee](https://bmc-cdn.nyc3.digitaloceanspaces.com/BMC-button-images/custom_images/orange_img.png)](https://www.buymeacoffee.com/trapias)
+
 ## Installazione rapida con Docker
 
 **La guida si avvia con Docker Compose.** Con Git e Docker già installati, esegui questi comandi. Il NAS serve solo se vuoi registrare.
@@ -138,8 +140,6 @@ Per usare una playlist personalizzata, imposta `GUIDATV_STREAMS_M3U` nel file `.
 - **web** serve l’interfaccia in JavaScript e le API con Node. Conserva in un volume l’ultima guida valida. Mostra i canali con dati disponibili e usa i loghi XMLTV, con [server/src/logos.json](server/src/logos.json) come riserva.
 
 Per eseguire i test del server, usa `cd server && npm install && npm test`.
-
-[![Sostieni Guida TV su Buy Me a Coffee](https://bmc-cdn.nyc3.digitaloceanspaces.com/BMC-button-images/custom_images/orange_img.png)](https://www.buymeacoffee.com/trapias)
 
 ## English overview
 
